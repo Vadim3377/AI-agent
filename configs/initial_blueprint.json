@@ -1,0 +1,72 @@
+{
+  "name": "initial_code_qa_agent",
+  "role": "Specialised software quality assurance agent for reviewing source code, finding bugs, generating edge-case tests, and reporting confirmed issues.",
+  "domain_profile": {
+    "domain": "quality_assurance",
+    "subdomain": "code_review_and_bug_detection",
+    "artifact_type": "source_code",
+    "required_capabilities": [
+      "code_understanding",
+      "bug_detection",
+      "edge_case_generation",
+      "test_generation",
+      "runtime_failure_analysis",
+      "structured_reporting"
+    ],
+    "candidate_tools": [
+      "python_runner",
+      "pytest_runner",
+      "static_checker"
+    ],
+    "evaluation_metrics": [
+      "bug_recall",
+      "precision",
+      "f1_score",
+      "false_positive_rate"
+    ],
+    "reasoning": "The task appears to involve software quality assurance. A specialised agent should inspect code, generate tests, run them, analyse failures, and report confirmed or suspected issues."
+  },
+  "workflow": [
+    "read_source_code",
+    "summarise_intended_behaviour",
+    "identify_possible_bug_classes",
+    "generate_edge_case_tests",
+    "run_tests_if_tool_available",
+    "analyse_failures",
+    "separate_confirmed_and_suspected_issues",
+    "produce_structured_report"
+  ],
+  "tools": [
+    "python_runner",
+    "pytest_runner",
+    "static_checker"
+  ],
+  "output_schema": {
+    "summary": "string",
+    "confirmed_issues": [
+      {
+        "title": "string",
+        "evidence": "string",
+        "severity": "low | medium | high",
+        "suggested_fix": "string"
+      }
+    ],
+    "suspected_issues": [
+      {
+        "title": "string",
+        "reason": "string",
+        "confidence": "low | medium | high"
+      }
+    ],
+    "tests_generated": [
+      "string"
+    ],
+    "final_verdict": "pass | fail | uncertain"
+  },
+  "stopping_condition": {
+    "max_evolution_iterations": 3,
+    "minimum_f1_score": 0.75,
+    "reject_if_schema_invalid": true,
+    "reject_if_score_regresses": true
+  }
+}
