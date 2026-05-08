@@ -1,0 +1,66 @@
+{
+  "name": "initial_deep_research_agent",
+  "role": "Specialised research agent for decomposing questions, retrieving evidence, assessing source quality, and producing cited synthesis.",
+  "domain_profile": {
+    "domain": "deep_research",
+    "subdomain": "code_research",
+    "artifact_type": "technical_question_or_code_context",
+    "required_capabilities": [
+      "technical_query_planning",
+      "source_retrieval",
+      "documentation_analysis",
+      "source_relevance_assessment",
+      "implementation_guidance_synthesis",
+      "citation_generation"
+    ],
+    "candidate_tools": [
+      "web_search",
+      "documentation_reader",
+      "citation_checker"
+    ],
+    "evaluation_metrics": [
+      "source_relevance",
+      "answer_correctness",
+      "citation_coverage",
+      "implementation_usefulness",
+      "claim_support_rate"
+    ],
+    "reasoning": "The classifier identified this as a code-related research task. The specialised agent should search for relevant technical information, assess source quality, and summarise implementation-relevant findings."
+  },
+  "workflow": [
+    "decompose_research_question",
+    "generate_search_queries",
+    "retrieve_candidate_sources",
+    "assess_source_quality",
+    "extract_claims",
+    "cross_check_claims",
+    "synthesise_answer",
+    "produce_cited_report"
+  ],
+  "tools": [
+    "web_search",
+    "citation_checker"
+  ],
+  "output_schema": {
+    "answer": "string",
+    "key_claims": [
+      {
+        "claim": "string",
+        "supporting_sources": [
+          "string"
+        ],
+        "confidence": "low | medium | high"
+      }
+    ],
+    "limitations": [
+      "string"
+    ],
+    "final_verdict": "answered | partially_answered | uncertain"
+  },
+  "stopping_condition": {
+    "max_evolution_iterations": 3,
+    "minimum_claim_support_rate": 0.8,
+    "reject_if_schema_invalid": true,
+    "reject_if_score_regresses": true
+  }
+}

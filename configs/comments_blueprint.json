@@ -1,0 +1,67 @@
+{
+  "name": "initial_code_qa_agent",
+  "role": "Specialised software quality assurance agent for reviewing source code, finding bugs, generating edge-case tests, and reporting confirmed issues.",
+  "domain_profile": {
+    "domain": "quality_assurance",
+    "subdomain": "comments_and_documentation",
+    "artifact_type": "source_code",
+    "required_capabilities": [
+      "code_understanding",
+      "intent_extraction",
+      "non_obvious_logic_detection",
+      "comment_generation",
+      "docstring_generation",
+      "redundant_comment_avoidance"
+    ],
+    "candidate_tools": [
+      "documentation_generator",
+      "style_checker"
+    ],
+    "evaluation_metrics": [
+      "comment_relevance",
+      "comment_conciseness",
+      "coverage_of_non_obvious_logic",
+      "redundant_comment_rate"
+    ],
+    "reasoning": "The classifier identified this as a comments and documentation task. The specialised agent should explain non-obvious logic and improve understandability without adding noisy or redundant comments."
+  },
+  "workflow": [
+    "read_source_code",
+    "summarise_intended_behaviour",
+    "identify_possible_bug_classes",
+    "generate_edge_case_tests",
+    "run_tests_if_tool_available",
+    "analyse_failures",
+    "separate_confirmed_and_suspected_issues",
+    "produce_structured_report"
+  ],
+  "tools": [],
+  "output_schema": {
+    "summary": "string",
+    "confirmed_issues": [
+      {
+        "title": "string",
+        "evidence": "string",
+        "severity": "low | medium | high",
+        "suggested_fix": "string"
+      }
+    ],
+    "suspected_issues": [
+      {
+        "title": "string",
+        "reason": "string",
+        "confidence": "low | medium | high"
+      }
+    ],
+    "tests_generated": [
+      "string"
+    ],
+    "final_verdict": "pass | fail | uncertain"
+  },
+  "stopping_condition": {
+    "max_evolution_iterations": 3,
+    "minimum_f1_score": 0.75,
+    "reject_if_schema_invalid": true,
+    "reject_if_score_regresses": true
+  }
+}

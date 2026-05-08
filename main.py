@@ -37,6 +37,7 @@ def main() -> None:
     print(f"Domain: {blueprint.domain_profile.domain}")
     print(f"Subdomain: {blueprint.domain_profile.subdomain}")
     print(f"Blueprint name: {blueprint.name}")
+    print(f"Reasoning: {blueprint.domain_profile.reasoning}")
     print(f"Saved to: {args.output}")
 
 
