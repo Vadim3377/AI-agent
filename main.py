@@ -4,7 +4,7 @@ import os
 from stem_shell import StemShell
 from models import save_blueprint
 from agent_runner import AgentRunner, load_blueprint, save_run_result
-
+from llm_agent_runner import LLMAgentRunner
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -56,7 +56,21 @@ def main() -> None:
         help="Path where the runner output JSON should be saved."
     )
 
+    parser.add_argument(
+        "--use-llm",
+        action="store_true",
+        help="Use the OpenAI-backed LLM runner instead of the deterministic runner."
+    )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gpt-4.1-mini",
+        help="OpenAI model to use for the LLM runner."
+    )
+
     args = parser.parse_args()
+
     if args.run_blueprint:
         if not args.input:
             raise ValueError("--input is required when using --run-blueprint")
@@ -66,15 +80,26 @@ def main() -> None:
             os.makedirs(run_output_dir, exist_ok=True)
 
         blueprint = load_blueprint(args.run_blueprint)
-        runner = AgentRunner()
+
+        if args.use_llm:
+            runner = LLMAgentRunner(model=args.model)
+        else:
+            runner = AgentRunner()
+
         result = runner.run(blueprint, args.input)
         save_run_result(result, args.run_output)
 
         print("Agent runner completed blueprint execution.")
+        print(f"Runner: {'llm' if args.use_llm else 'deterministic'}")
         print(f"Blueprint: {blueprint.name}")
         print(f"Domain: {blueprint.domain_profile.domain}")
         print(f"Subdomain: {blueprint.domain_profile.subdomain}")
-        print(f"Executed steps: {len(result['executed_steps'])}")
+
+        if args.use_llm:
+            print(f"Model: {args.model}")
+        else:
+            print(f"Executed steps: {len(result['executed_steps'])}")
+
         print(f"Saved run result to: {args.run_output}")
         return
 
