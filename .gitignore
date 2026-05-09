@@ -1,7 +1,13 @@
 .env
 __pycache__/
 *.py[cod]
+
 configs/*.json
 results/*.json
+results/selected_blueprints/
+
 .idea/
+.vscode/
 .venv/
+venv/
+env/
