@@ -1,6 +1,6 @@
 {
-  "name": "debugging_specialist_agent",
-  "role": "Specialised debugging agent for locating defects in source code, reasoning about expected behaviour, generating tests, and suggesting fixes.",
+  "name": "debugging_specialist_agent__mutated_debugging_verification",
+  "role": "Specialised debugging agent for locating defects in source code, reasoning about expected behaviour, generating tests, and suggesting fixes. This version has been mutated to add a more explicit verification step before producing its final answer.",
   "domain_profile": {
     "domain": "quality_assurance",
     "subdomain": "debugging",
@@ -37,6 +37,8 @@
     "localise_likely_bug",
     "suggest_fix",
     "explain_fix_rationale",
+    "verify_fix_against_generated_tests",
+    "check_for_regression_risk",
     "produce_debugging_report"
   ],
   "tools": [
@@ -56,13 +58,18 @@
     "suggested_fix": "string",
     "fix_rationale": "string",
     "confidence": "low | medium | high",
-    "final_verdict": "fixed | likely_fixed | uncertain"
+    "final_verdict": "fixed | likely_fixed | uncertain",
+    "regression_risk": "low | medium | high",
+    "verification_summary": "string"
   },
   "stopping_condition": {
     "max_evolution_iterations": 3,
     "minimum_fix_correctness": 0.75,
     "minimum_test_pass_rate": 0.8,
     "reject_if_schema_invalid": true,
-    "reject_if_score_regresses": true
+    "reject_if_score_regresses": true,
+    "minimum_regression_safety": 0.8,
+    "mutation_applied": "debugging_verification",
+    "mutation_strategy": "safe_blueprint_configuration_mutation"
   }
 }
