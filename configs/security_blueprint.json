@@ -1,0 +1,64 @@
+{
+  "name": "initial_security_privacy_agent",
+  "role": "Specialised security and privacy validation agent for detecting possible sensitive-data leaks and producing evidence-backed diagnostics.",
+  "domain_profile": {
+    "domain": "security",
+    "subdomain": "dangerous_operations_and_data_breaches",
+    "artifact_type": "source_code_or_structured_payload",
+    "required_capabilities": [
+      "dangerous_operation_detection",
+      "secret_detection",
+      "pii_detection",
+      "data_leak_risk_classification",
+      "evidence_extraction",
+      "mitigation_suggestion",
+      "structured_security_reporting"
+    ],
+    "candidate_tools": [
+      "regex_scanner",
+      "secret_detector",
+      "static_checker",
+      "llm_risk_classifier"
+    ],
+    "evaluation_metrics": [
+      "leak_detection_recall",
+      "security_precision",
+      "false_positive_rate",
+      "severity_classification_accuracy",
+      "f1_score"
+    ],
+    "reasoning": "The classifier identified this as a security task involving dangerous operations or possible data breaches. The specialised agent should detect unsafe operations, exposed secrets, PII, and risky data flows."
+  },
+  "workflow": [
+    "read_input_payload",
+    "scan_for_deterministic_patterns",
+    "classify_sensitive_data_risks",
+    "extract_evidence",
+    "assign_severity",
+    "produce_diagnostic_report"
+  ],
+  "tools": [
+    "regex_scanner",
+    "secret_detector",
+    "llm_risk_classifier"
+  ],
+  "output_schema": {
+    "summary": "string",
+    "risk_level": "none | low | medium | high",
+    "findings": [
+      {
+        "type": "string",
+        "evidence": "string",
+        "severity": "low | medium | high",
+        "recommendation": "string"
+      }
+    ],
+    "final_verdict": "safe | unsafe | uncertain"
+  },
+  "stopping_condition": {
+    "max_evolution_iterations": 3,
+    "minimum_f1_score": 0.8,
+    "reject_if_schema_invalid": true,
+    "reject_if_score_regresses": true
+  }
+}

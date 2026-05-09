@@ -24,19 +24,27 @@ def main() -> None:
         help="Path where the generated blueprint JSON should be saved."
     )
 
+    parser.add_argument(
+        "--mutate",
+        action="store_true",
+        help="Apply a controlled mutation to the generated blueprint."
+    )
+
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     shell = StemShell()
-    blueprint = shell.grow_initial_blueprint(args.task)
+    blueprint = shell.grow_initial_blueprint(args.task, mutate=args.mutate)
 
     save_blueprint(blueprint, args.output)
 
     print("Stem shell completed initial specialisation.")
+    print(f"Mutation enabled: {args.mutate}")
     print(f"Domain: {blueprint.domain_profile.domain}")
     print(f"Subdomain: {blueprint.domain_profile.subdomain}")
     print(f"Blueprint name: {blueprint.name}")
+    print(f"Reasoning: {blueprint.domain_profile.reasoning}")
     print(f"Saved to: {args.output}")
 
 

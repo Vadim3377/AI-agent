@@ -1,0 +1,73 @@
+{
+  "name": "initial_code_qa_agent",
+  "role": "Specialised software quality assurance agent for reviewing source code, finding bugs, generating edge-case tests, and reporting confirmed issues.",
+  "domain_profile": {
+    "domain": "quality_assurance",
+    "subdomain": "code_quality_cleanup",
+    "artifact_type": "source_code",
+    "required_capabilities": [
+      "code_understanding",
+      "dead_code_detection",
+      "redundancy_detection",
+      "readability_analysis",
+      "performance_smell_detection",
+      "behaviour_preservation",
+      "refactoring_suggestion",
+      "structured_reporting"
+    ],
+    "candidate_tools": [
+      "static_checker",
+      "complexity_analyser",
+      "formatter"
+    ],
+    "evaluation_metrics": [
+      "behaviour_preservation_rate",
+      "complexity_reduction",
+      "redundancy_reduction",
+      "readability_score",
+      "review_precision"
+    ],
+    "reasoning": "The classifier identified this as a code-quality cleanup task. The specialised agent should improve maintainability without changing the intended behaviour of the code."
+  },
+  "workflow": [
+    "read_source_code",
+    "summarise_intended_behaviour",
+    "identify_possible_bug_classes",
+    "generate_edge_case_tests",
+    "run_tests_if_tool_available",
+    "analyse_failures",
+    "separate_confirmed_and_suspected_issues",
+    "produce_structured_report"
+  ],
+  "tools": [
+    "static_checker"
+  ],
+  "output_schema": {
+    "summary": "string",
+    "confirmed_issues": [
+      {
+        "title": "string",
+        "evidence": "string",
+        "severity": "low | medium | high",
+        "suggested_fix": "string"
+      }
+    ],
+    "suspected_issues": [
+      {
+        "title": "string",
+        "reason": "string",
+        "confidence": "low | medium | high"
+      }
+    ],
+    "tests_generated": [
+      "string"
+    ],
+    "final_verdict": "pass | fail | uncertain"
+  },
+  "stopping_condition": {
+    "max_evolution_iterations": 3,
+    "minimum_f1_score": 0.75,
+    "reject_if_schema_invalid": true,
+    "reject_if_score_regresses": true
+  }
+}
