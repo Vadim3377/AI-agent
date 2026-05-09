@@ -3,6 +3,7 @@ import os
 
 from stem_shell import StemShell
 from models import save_blueprint
+from agent_runner import AgentRunner, load_blueprint, save_run_result
 
 
 def main() -> None:
@@ -13,7 +14,7 @@ def main() -> None:
     parser.add_argument(
         "--task",
         type=str,
-        required=True,
+        required=False,
         help="Description of the task family the stem agent should specialise for."
     )
 
@@ -36,7 +37,46 @@ def main() -> None:
         help="Evaluate the base and mutated blueprints, then save the better one."
     )
 
+    parser.add_argument(
+        "--run-blueprint",
+        type=str,
+        help="Path to an existing blueprint JSON file to execute."
+    )
+
+    parser.add_argument(
+        "--input",
+        type=str,
+        help="Task input string for the agent runner."
+    )
+
+    parser.add_argument(
+        "--run-output",
+        type=str,
+        default="results/run_result.json",
+        help="Path where the runner output JSON should be saved."
+    )
+
     args = parser.parse_args()
+    if args.run_blueprint:
+        if not args.input:
+            raise ValueError("--input is required when using --run-blueprint")
+
+        run_output_dir = os.path.dirname(args.run_output)
+        if run_output_dir:
+            os.makedirs(run_output_dir, exist_ok=True)
+
+        blueprint = load_blueprint(args.run_blueprint)
+        runner = AgentRunner()
+        result = runner.run(blueprint, args.input)
+        save_run_result(result, args.run_output)
+
+        print("Agent runner completed blueprint execution.")
+        print(f"Blueprint: {blueprint.name}")
+        print(f"Domain: {blueprint.domain_profile.domain}")
+        print(f"Subdomain: {blueprint.domain_profile.subdomain}")
+        print(f"Executed steps: {len(result['executed_steps'])}")
+        print(f"Saved run result to: {args.run_output}")
+        return
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
@@ -63,6 +103,7 @@ def main() -> None:
         print(f"Reasoning: {blueprint.domain_profile.reasoning}")
         print(f"Saved to: {args.output}")
         return
+
 
     blueprint = shell.grow_initial_blueprint(args.task, mutate=args.mutate)
 
