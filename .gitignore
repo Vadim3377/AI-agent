@@ -5,6 +5,7 @@ __pycache__/
 configs/*.json
 results/*.json
 results/selected_blueprints/
+results/frontend_last_run.json
 
 .idea/
 .vscode/
