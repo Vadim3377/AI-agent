@@ -24,6 +24,13 @@ class AgentBlueprint:
     output_schema: Dict[str, Any]
     stopping_condition: Dict[str, Any]
 
+@dataclass
+class EvaluationResult:
+    score: float
+    passed_checks: List[str]
+    failed_checks: List[str]
+    notes: str
+
 
 def save_blueprint(blueprint: AgentBlueprint, path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
