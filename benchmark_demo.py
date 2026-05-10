@@ -1,3 +1,18 @@
+"""
+benchmark_demo.py — Full pipeline benchmark across all supported task categories.
+
+For each task the benchmark:
+  1. Profiles the prompt (DomainProfiler)
+  2. Generates a base blueprint (ArchitectureGenerator)
+  3. Runs the multi-round MutationLoop with real tool feedback
+  4. Selects the best blueprint
+  5. Executes the selected blueprint (AgentRunner, with real tools)
+  6. Records structural score, task-level score, and tools called
+
+This replaces the original single-mutation + structural-only comparison.
+The per-task input snippets are real code so tools have something to run on.
+"""
+
 import json
 import os
 from typing import Any, Dict, List
@@ -8,6 +23,7 @@ from blueprint_evaluator import BlueprintEvaluator
 from blueprint_mutator import BlueprintMutator
 from domain_profiler import DomainProfiler
 from models import save_blueprint
+from mutation_loop import MutationLoop
 
 
 BENCHMARK_TASKS = [
@@ -19,17 +35,31 @@ BENCHMARK_TASKS = [
     {
         "id": "code_quality_cleanup",
         "task": "Clean up this code, remove dead code, simplify redundant logic, and improve readability.",
-        "input": "def calculate(x):\n    unused = 123\n    result = x * 1\n    if True:\n        return result",
+        "input": (
+            "def calculate(x):\n"
+            "    unused = 123\n"
+            "    result = x * 1\n"
+            "    if True:\n"
+            "        return result\n"
+        ),
     },
     {
         "id": "comments_and_documentation",
         "task": "Add useful comments and docstrings to explain the code.",
-        "input": "def normalise(values):\n    m = max(values)\n    return [v / m for v in values]",
+        "input": (
+            "def normalise(values):\n"
+            "    m = max(values)\n"
+            "    return [v / m for v in values]\n"
+        ),
     },
     {
         "id": "security",
         "task": "Check this code for dangerous operations, API key leaks, passwords, and possible data breaches.",
-        "input": "API_KEY = 'sk-test-123'\npassword = 'admin'\neval(user_input)",
+        "input": (
+            "API_KEY = 'sk-test-abcdefghij123456789012345678'\n"
+            "password = 'admin123'\n"
+            "eval(user_input)\n"
+        ),
     },
     {
         "id": "code_research",
@@ -41,50 +71,32 @@ BENCHMARK_TASKS = [
 
 class BenchmarkDemo:
     """
-    Runs the full stem-agent pipeline on a small deterministic benchmark.
-
-    For each task:
-    1. profile the prompt
-    2. generate a base blueprint
-    3. mutate the blueprint
-    4. evaluate base vs mutated
-    5. select the stronger blueprint
-    6. execute the selected blueprint using AgentRunner
+    Runs the full stem-agent pipeline on all supported task categories.
+    Uses MutationLoop (multi-round) instead of a single mutation.
     """
 
     def __init__(self) -> None:
         self.profiler = DomainProfiler()
         self.architecture_generator = ArchitectureGenerator()
-        self.mutator = BlueprintMutator()
         self.evaluator = BlueprintEvaluator()
         self.runner = AgentRunner()
 
     def run(self) -> List[Dict[str, Any]]:
-        results = []
-
-        for task_case in BENCHMARK_TASKS:
-            results.append(self._run_case(task_case))
-
-        return results
+        return [self._run_case(task) for task in BENCHMARK_TASKS]
 
     def _run_case(self, task_case: Dict[str, str]) -> Dict[str, Any]:
         profile = self.profiler.profile(task_case["task"])
-
         base_blueprint = self.architecture_generator.generate(profile)
-        mutated_blueprint = self.mutator.mutate(base_blueprint)
 
-        base_eval = self.evaluator.evaluate(base_blueprint)
-        mutated_eval = self.evaluator.evaluate(mutated_blueprint)
+        # Multi-round evolution with real tool feedback
+        loop = MutationLoop(max_rounds=4, run_tools=bool(task_case["input"].strip()))
+        evolution = loop.run(base_blueprint, task_input=task_case["input"])
 
-        if mutated_eval.score > base_eval.score:
-            selected = "mutated"
-            selected_blueprint = mutated_blueprint
-            selected_eval = mutated_eval
-        else:
-            selected = "base"
-            selected_blueprint = base_blueprint
-            selected_eval = base_eval
+        selected_blueprint = evolution.best_blueprint
+        base_round = evolution.rounds[0]
+        best_round = max(evolution.rounds, key=lambda r: r.combined_score)
 
+        # Execute selected blueprint with real tools
         run_result = self.runner.run(selected_blueprint, task_case["input"])
 
         return {
@@ -93,63 +105,50 @@ class BenchmarkDemo:
             "domain": profile.domain,
             "subdomain": profile.subdomain,
             "base_blueprint": base_blueprint.name,
-            "mutated_blueprint": mutated_blueprint.name,
-            "base_score": base_eval.score,
-            "mutated_score": mutated_eval.score,
-            "selected": selected,
             "selected_blueprint": selected_blueprint.name,
-            "selected_score": selected_eval.score,
+            "base_structural_score": base_round.structural_score,
+            "base_task_score": base_round.task_score,
+            "base_combined_score": base_round.combined_score,
+            "best_structural_score": best_round.structural_score,
+            "best_task_score": best_round.task_score,
+            "best_combined_score": best_round.combined_score,
+            "total_rounds": evolution.total_mutations,
+            "stopping_reason": evolution.stopping_reason,
+            "tools_called": run_result.get("tools_called", []),
             "executed_steps": len(run_result["executed_steps"]),
             "final_status": run_result["final_status"],
-            "base_failed_checks": base_eval.failed_checks,
-            "mutated_failed_checks": mutated_eval.failed_checks,
+            "evolution_table": evolution.summary_table(),
         }
 
 
 def save_json(results: List[Dict[str, Any]], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(results, file, indent=2)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
 
 
 def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
     lines = [
-        "# Stem Agent Benchmark Summary",
-        "",
-        "This benchmark compares the base generated blueprint with the mutated blueprint. "
-        "The evaluator scores structural blueprint quality, selects the stronger blueprint, "
-        "and then executes the selected blueprint with the deterministic agent runner.",
-        "",
-        "| Task | Domain | Subdomain | Base Score | Mutated Score | Selected | Executed Steps | Status |",
-        "|---|---|---|---:|---:|---|---:|---|",
+        "# Stem Agent Benchmark Summary\n",
+        "Two-layer evaluation: structural (40%) + task-level from real tool results (60%).\n",
+        "| Task | Domain | Subdomain | Base Combined | Best Combined | Rounds | Tools Called |",
+        "|------|--------|-----------|:-------------:|:-------------:|:------:|--------------|",
     ]
-
-    for result in results:
+    for r in results:
+        tools = ", ".join(r["tools_called"]) if r["tools_called"] else "—"
         lines.append(
-            f"| {result['task_id']} "
-            f"| {result['domain']} "
-            f"| {result['subdomain']} "
-            f"| {result['base_score']:.2f} "
-            f"| {result['mutated_score']:.2f} "
-            f"| {result['selected']} "
-            f"| {result['executed_steps']} "
-            f"| {result['final_status']} |"
+            f"| {r['task_id']} | {r['domain']} | {r['subdomain']} "
+            f"| {r['base_combined_score']:.2f} | {r['best_combined_score']:.2f} "
+            f"| {r['total_rounds']} | {tools} |"
         )
 
-    lines.extend(
-        [
-            "",
-            "## Notes",
-            "",
-            "- The benchmark is deterministic.",
-            "- It evaluates the stem-agent pipeline rather than a foundation model.",
-            "- The current scores measure blueprint structure, safeguard coverage, workflow relevance, and schema completeness.",
-            "- A future version should evaluate semantic task-solving performance using labelled debugging, security, documentation, and research tasks.",
-            "",
-        ]
-    )
+    lines += [
+        "\n## Per-Task Evolution Tables\n",
+    ]
+    for r in results:
+        lines += [f"### {r['task_id']}\n", "```", r["evolution_table"], "```\n"]
 
-    with open(path, "w", encoding="utf-8") as file:
-        file.write("\n".join(lines))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
 
 
 def save_selected_blueprints(results_dir: str) -> None:
@@ -157,26 +156,15 @@ def save_selected_blueprints(results_dir: str) -> None:
     os.makedirs(selected_dir, exist_ok=True)
 
     profiler = DomainProfiler()
-    architecture_generator = ArchitectureGenerator()
-    mutator = BlueprintMutator()
-    evaluator = BlueprintEvaluator()
+    arch_gen = ArchitectureGenerator()
 
     for task_case in BENCHMARK_TASKS:
         profile = profiler.profile(task_case["task"])
-        base_blueprint = architecture_generator.generate(profile)
-        mutated_blueprint = mutator.mutate(base_blueprint)
-
-        base_eval = evaluator.evaluate(base_blueprint)
-        mutated_eval = evaluator.evaluate(mutated_blueprint)
-
-        selected_blueprint = (
-            mutated_blueprint
-            if mutated_eval.score > base_eval.score
-            else base_blueprint
-        )
-
+        base_bp = arch_gen.generate(profile)
+        loop = MutationLoop(max_rounds=4, run_tools=bool(task_case["input"].strip()))
+        evolution = loop.run(base_bp, task_input=task_case["input"])
         save_blueprint(
-            selected_blueprint,
+            evolution.best_blueprint,
             os.path.join(selected_dir, f"{task_case['id']}_selected_blueprint.json"),
         )
 
@@ -185,6 +173,7 @@ def main() -> None:
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
 
+    print("Running benchmark (multi-round evolution + real tools)...")
     benchmark = BenchmarkDemo()
     results = benchmark.run()
 
@@ -192,22 +181,20 @@ def main() -> None:
     save_markdown(results, os.path.join(results_dir, "benchmark_summary.md"))
     save_selected_blueprints(results_dir)
 
-    print("Benchmark demo completed.")
-    print(f"Cases run: {len(results)}")
-    print("Saved JSON summary to: results/benchmark_summary.json")
-    print("Saved Markdown summary to: results/benchmark_summary.md")
-    print("Saved selected blueprints to: results/selected_blueprints/")
-    print()
-
-    print("Summary:")
-    for result in results:
+    print(f"\nBenchmark complete — {len(results)} tasks\n")
+    print(f"{'Task':<30} {'Base':>6} {'Best':>6} {'Rounds':>7} {'Tools'}")
+    print("-" * 72)
+    for r in results:
+        tools = ", ".join(r["tools_called"]) if r["tools_called"] else "—"
         print(
-            f"- {result['task_id']}: "
-            f"base={result['base_score']:.2f}, "
-            f"mutated={result['mutated_score']:.2f}, "
-            f"selected={result['selected']}, "
-            f"steps={result['executed_steps']}"
+            f"{r['task_id']:<30} {r['base_combined_score']:>6.2f} "
+            f"{r['best_combined_score']:>6.2f} {r['total_rounds']:>7}   {tools}"
         )
+
+    print("\nSaved:")
+    print("  results/benchmark_summary.json")
+    print("  results/benchmark_summary.md")
+    print("  results/selected_blueprints/")
 
 
 if __name__ == "__main__":

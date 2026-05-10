@@ -1,30 +1,97 @@
+"""
+agent_runner.py — Deterministic AgentRunner with integrated real tooling.
+
+For each workflow step the runner checks whether a real tool from tools.py
+is applicable. If so, the tool is called on the task input and its output is
+recorded in the execution trace. Tool results are also stored in
+runner.last_tool_results so that BlueprintEvaluator can use them for
+task-level (non-circular) scoring.
+
+Steps without a matching tool fall back to descriptive placeholder text,
+exactly as before. The LLMAgentRunner is unchanged.
+"""
+
 import json
-from dataclasses import asdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from models import AgentBlueprint, DomainProfile
+from tools import run_tool, ToolResult, TOOL_REGISTRY
 
+
+# ---------------------------------------------------------------------------
+# Step → tool routing table
+# Each entry: (list_of_keywords_in_step_name, tool_name)
+# First match wins.
+# ---------------------------------------------------------------------------
+
+_STEP_TO_TOOL: List[tuple] = [
+    (["run_tests", "execute_tests", "pytest", "test_harness", "verify_fix",
+      "verify_against", "check_fix"],                                    "pytest_runner"),
+    (["static", "analyse_code", "analyze_code", "lint",
+      "identify_failure", "infer_expected", "localise_bug",
+      "suspect_bug", "flag_suspicious"],                                 "static_checker"),
+    (["complexity", "dead_code", "redundant"],                           "complexity_checker"),
+    (["secret", "pii", "dangerous", "sensitive"],                        "secret_detector"),
+    (["docstring", "documentation", "comment_coverage"],                 "docstring_checker"),
+]
+
+
+def _resolve_tool_for_step(step: str, blueprint_tools: List[str]) -> Optional[str]:
+    """
+    Return the best matching registered tool name for a workflow step, or None.
+    Priority: keyword match in step name → None.
+    """
+    step_lower = step.lower()
+    for keywords, tool_name in _STEP_TO_TOOL:
+        if any(kw in step_lower for kw in keywords):
+            if tool_name in TOOL_REGISTRY:
+                return tool_name
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
 
 class AgentRunner:
     """
-    Executes a selected AgentBlueprint in a deterministic way.
+    Executes a selected AgentBlueprint step-by-step.
 
-    This runner does not call an LLM yet. It interprets the generated workflow
-    and produces an execution trace showing how the specialised agent would
-    process a concrete task input.
+    For each workflow step:
+    1. Attempt to match a real tool (_resolve_tool_for_step).
+    2. If matched and not yet called this run, call the tool and record results.
+    3. If no tool matches, produce a descriptive placeholder.
+
+    Tool results are aggregated in self._tool_results so that
+    BlueprintEvaluator can perform task-level scoring using real evidence.
     """
 
     def run(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
-        executed_steps = []
+        self._tool_results: List[ToolResult] = []
+        self._tools_called: List[str] = []
 
+        executed_steps = []
         for step in blueprint.workflow:
-            executed_steps.append(
-                {
-                    "step": step,
-                    "status": "completed",
-                    "result": self._execute_step(step, blueprint, task_input),
-                }
-            )
+            tool_name = _resolve_tool_for_step(step, blueprint.tools)
+            tool_result: Optional[ToolResult] = None
+
+            if tool_name and tool_name not in self._tools_called:
+                tool_result = run_tool(tool_name, task_input)
+                if tool_result is not None:
+                    self._tool_results.append(tool_result)
+                    self._tools_called.append(tool_name)
+
+            executed_steps.append({
+                "step": step,
+                "status": "completed",
+                "tool_used": tool_name if tool_result else None,
+                "tool_success": tool_result.success if tool_result else None,
+                "result": (
+                    self._format_tool_result(tool_result)
+                    if tool_result
+                    else self._describe_step(step, blueprint)
+                ),
+            })
 
         return {
             "blueprint_name": blueprint.name,
@@ -32,85 +99,104 @@ class AgentRunner:
             "subdomain": blueprint.domain_profile.subdomain,
             "task_input_preview": task_input[:250],
             "executed_steps": executed_steps,
+            "tool_results": [self._tool_to_dict(r) for r in self._tool_results],
+            "tools_called": self._tools_called,
             "final_output": self._build_final_output(blueprint, task_input),
             "final_status": "completed",
         }
 
-    def _execute_step(
-        self,
-        step: str,
-        blueprint: AgentBlueprint,
-        task_input: str
-    ) -> str:
-        step_name = step.lower()
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _format_tool_result(self, result: ToolResult) -> str:
+        status = "passed" if result.success else "failed"
+        return f"[{result.tool_name}] {status}: {result.raw_text[:300]}"
+
+    def _tool_to_dict(self, result: ToolResult) -> Dict[str, Any]:
+        return {
+            "tool": result.tool_name,
+            "success": result.success,
+            "output": result.output,
+            "summary": result.raw_text[:500],
+            "error": result.error,
+        }
+
+    def _describe_step(self, step: str, blueprint: AgentBlueprint) -> str:
+        s = step.lower()
         subdomain = blueprint.domain_profile.subdomain
+        if "read" in s:
+            return "Task input loaded into execution context."
+        if "infer" in s or "summarise" in s or "summarize" in s:
+            return "High-level interpretation of the task input produced."
+        if "bug" in s or "failure" in s or "fix" in s:
+            return "Debugging reasoning step recorded (no tool matched for this step)."
+        if "dead" in s or "redundant" in s or "refactor" in s:
+            return "Code-quality cleanup step recorded."
+        if "comment" in s or "docstring" in s or "documentation" in s:
+            return "Documentation improvement step recorded."
+        if "risk" in s or "secret" in s or "pii" in s or "mitigation" in s:
+            return "Security analysis step recorded."
+        if "search" in s or "source" in s or "research" in s:
+            return "Research planning step recorded."
+        if "verify" in s or "check" in s or "cross" in s:
+            return "Verification step recorded."
+        return f"Workflow step completed for subdomain '{subdomain}'."
 
-        if "read" in step_name:
-            return "Task input was read and loaded into the execution context."
-
-        if "infer" in step_name or "summarise" in step_name or "summarize" in step_name:
-            return "The runner created a high-level interpretation of the task input."
-
-        if "test" in step_name:
-            return "The runner marked this as a test-related step. No real tests were executed in this deterministic runner."
-
-        if "bug" in step_name or "failure" in step_name or "fix" in step_name:
-            return "The runner marked this as a debugging-related reasoning step."
-
-        if "dead" in step_name or "redundant" in step_name or "refactor" in step_name:
-            return "The runner marked this as a code-quality cleanup step."
-
-        if "comment" in step_name or "docstring" in step_name or "documentation" in step_name:
-            return "The runner marked this as a documentation-improvement step."
-
-        if "risk" in step_name or "secret" in step_name or "pii" in step_name or "mitigation" in step_name:
-            return "The runner marked this as a security-analysis step."
-
-        if "search" in step_name or "source" in step_name or "research" in step_name:
-            return "The runner marked this as a research-planning or source-analysis step."
-
-        if "verify" in step_name or "check" in step_name or "cross" in step_name:
-            return "The runner marked this as a verification or safeguard step."
-
-        return f"The runner completed workflow step for subdomain '{subdomain}'."
-
-    def _build_final_output(
-        self,
-        blueprint: AgentBlueprint,
-        task_input: str
-    ) -> Dict[str, Any]:
-        output: Dict[str, Any] = {}
-
+    def _build_final_output(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
+        tool_lookup = {r.tool_name: r for r in self._tool_results}
+        output = {}
         for key, schema_value in blueprint.output_schema.items():
-            output[key] = self._placeholder_for_schema_value(key, schema_value)
-
+            enriched = self._enrich(key, tool_lookup)
+            output[key] = enriched if enriched is not None else self._placeholder(key, schema_value)
         return output
 
-    def _placeholder_for_schema_value(self, key: str, schema_value: Any) -> Any:
-        if isinstance(schema_value, list):
-            return []
-
-        if isinstance(schema_value, dict):
-            return {
-                nested_key: f"placeholder_{nested_key}"
-                for nested_key in schema_value.keys()
-            }
-
-        if isinstance(schema_value, str):
-            if "|" in schema_value:
-                return schema_value.split("|")[0].strip()
-
-            return f"placeholder_{key}"
-
+    def _enrich(self, key: str, tool_lookup: Dict[str, ToolResult]) -> Optional[Any]:
+        k = key.lower()
+        if k in ("tests_passed", "tests_run") and "pytest_runner" in tool_lookup:
+            return tool_lookup["pytest_runner"].output.get(k)
+        if k == "static_issues" and "static_checker" in tool_lookup:
+            return tool_lookup["static_checker"].output.get("issues", [])
+        if k == "issue_count" and "static_checker" in tool_lookup:
+            return tool_lookup["static_checker"].output.get("issue_count", 0)
+        if k in ("complexity_report", "high_complexity_functions") and "complexity_checker" in tool_lookup:
+            return tool_lookup["complexity_checker"].output.get("functions", [])
+        if k in ("findings", "secrets_found") and "secret_detector" in tool_lookup:
+            return tool_lookup["secret_detector"].output.get("findings", [])
+        if k == "risk_level" and "secret_detector" in tool_lookup:
+            count = tool_lookup["secret_detector"].output.get("finding_count", 0)
+            return "low" if count == 0 else ("medium" if count <= 2 else "high")
+        if k == "final_verdict" and "secret_detector" in tool_lookup:
+            count = tool_lookup["secret_detector"].output.get("finding_count", 0)
+            return "clean" if count == 0 else f"{count} secret(s) detected"
+        if k == "docstring_coverage" and "docstring_checker" in tool_lookup:
+            return tool_lookup["docstring_checker"].output.get("coverage")
+        if k in ("missing_docstrings", "undocumented") and "docstring_checker" in tool_lookup:
+            return [m["name"] for m in tool_lookup["docstring_checker"].output.get("missing", [])]
         return None
 
+    def _placeholder(self, key: str, schema_value: Any) -> Any:
+        if isinstance(schema_value, list):
+            return []
+        if isinstance(schema_value, dict):
+            return {k: f"placeholder_{k}" for k in schema_value}
+        if isinstance(schema_value, str):
+            return schema_value.split("|")[0].strip() if "|" in schema_value else f"placeholder_{key}"
+        return None
+
+    @property
+    def last_tool_results(self) -> List[ToolResult]:
+        return getattr(self, "_tool_results", [])
+
+
+# ---------------------------------------------------------------------------
+# Serialisation helpers (unchanged API)
+# ---------------------------------------------------------------------------
 
 def load_blueprint(path: str) -> AgentBlueprint:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-
     profile_data = data["domain_profile"]
-
     profile = DomainProfile(
         domain=profile_data["domain"],
         subdomain=profile_data["subdomain"],
@@ -120,7 +206,6 @@ def load_blueprint(path: str) -> AgentBlueprint:
         evaluation_metrics=profile_data["evaluation_metrics"],
         reasoning=profile_data["reasoning"],
     )
-
     return AgentBlueprint(
         name=data["name"],
         role=data["role"],
