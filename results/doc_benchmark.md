@@ -17,15 +17,15 @@ A docstring is **complete** only if it contains an `Args:` section (for function
 | retry_module | 4 | 4/4 (100%) | 4/4 (100%) | 0 | — |
 | validation_module | 6 | 6/6 (100%) | 6/6 (100%) | 0 | — |
 | config_module | 5 | 5/5 (100%) | 5/5 (100%) | 0 | — |
-| event_module | 6 | 5/6 (83%) | 6/6 (100%) | 0 | ✓ |
+| event_module | 6 | 5/6 (83%) | 6/6 (100%) | 1 | ✓ |
 | data_pipeline_module | 5 | 5/5 (100%) | 5/5 (100%) | 0 | — |
-| **Average** | **5.0** | **96%** | **100%** | **0.10** | **2/10** |
+| **Average** | **5.0** | **96%** | **100%** | **0.20** | **2/10** |
 
 ## Key observations
 
 - Base blueprint (single-shot) average quality coverage: **96%**
 - Mutated blueprint (feedback loop) average quality coverage: **100%**
 - Coverage improved in **2 of 10** tasks.
-- Average revision rounds: **0.10**
+- Average revision rounds: **0.20**
 
 The LLM reliably adds *some* docstring on the first pass, but frequently writes one-liners that omit Args/Returns sections for helper functions. The mutated blueprint's quality checker surfaces these gaps and sends back a targeted revision request.
