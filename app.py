@@ -232,9 +232,7 @@ def display_runner_output(run_result: Dict[str, Any]) -> None:
         st.json(run_result)
 
 
-# ---------------------------------------------------------------------------
-# Classification display (new helper)
-# ---------------------------------------------------------------------------
+# Classification display
 
 def display_classification_info(pipeline_result: Dict[str, Any]) -> None:
     """
@@ -277,9 +275,8 @@ def display_classification_info(pipeline_result: Dict[str, Any]) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
+
 # Main Streamlit app
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     load_dotenv()
@@ -358,7 +355,7 @@ def main() -> None:
 
         st.success("Pipeline completed.")
 
-        # --- Domain / subdomain metrics ---
+        #  Domain / subdomain metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Domain", profile.domain)
@@ -372,10 +369,10 @@ def main() -> None:
                 pipeline_result["stopping_reason"].replace("_", " "),
             )
 
-        # --- Classification info (NEW) ---
+        # Classification info
         display_classification_info(pipeline_result)
 
-        # --- Evolution & evaluation ---
+        # Evolution & evaluation
         st.subheader("Evolution")
         st.code(evolution.summary_table(), language=None)
 
@@ -393,7 +390,7 @@ def main() -> None:
             st.write("Failed checks:")
             st.write(selected_eval.failed_checks)
 
-        # --- Selected blueprint ---
+        # Selected blueprint
         st.subheader("Selected Blueprint")
         st.write(f"**Blueprint name:** `{selected_blueprint.name}`")
         st.write(f"**Role:** {selected_blueprint.role}")
@@ -403,7 +400,7 @@ def main() -> None:
         with st.expander("Full selected blueprint JSON"):
             st.json(blueprint_to_dict(selected_blueprint))
 
-        # --- Runner output ---
+        # Runner output
         st.subheader("Runner Output")
         if not task_input.strip():
             st.warning("No concrete task input provided — runner execution skipped.")

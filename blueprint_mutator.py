@@ -1,21 +1,9 @@
 """
-blueprint_mutator.py — Controlled blueprint mutation.
+Apply controlled mutations to AgentBlueprint objects.
 
-This module applies safe mutations to an AgentBlueprint. It does not rewrite
-source code. It changes blueprint configuration: workflow steps, output schema,
-stopping conditions, and role description.
-
-Documentation mutation (updated)
----------------------------------
-The original mutation added comment-quality checks. This version additionally
-adds "verify_docstring_coverage" as an ACTIVE verification step. The runner
-checks for this exact signal to decide whether to run the docstring-checker
-→ revise loop. Without the active step the runner runs single-shot; with it,
-the loop is triggered.
-
-This mirrors the debugging design: "run_tests_if_available" is passive;
-"verify_fix_against_generated_tests" is active. The same active/passive
-distinction now applies to documentation.
+Mutation is limited to inspectable configuration fields: workflow steps,
+output schema, stopping conditions, and role description. Source code is not
+rewritten by this module.
 """
 
 from copy import deepcopy
@@ -52,9 +40,7 @@ class BlueprintMutator:
             return self._mutate_research_blueprint(mutated)
         return self._mutate_generic_blueprint(mutated)
 
-    # ------------------------------------------------------------------
     # Shared helpers
-    # ------------------------------------------------------------------
 
     def _mark_mutated(
         self, blueprint: AgentBlueprint, mutation_name: str
@@ -81,12 +67,10 @@ class BlueprintMutator:
             return
         blueprint.workflow.insert(len(blueprint.workflow) - 1, new_step)
 
-    # ------------------------------------------------------------------
     # Domain-specific mutations
-    # ------------------------------------------------------------------
 
     def _mutate_debugging_blueprint(self, blueprint: AgentBlueprint) -> AgentBlueprint:
-        # Active step — triggers the pytest feedback loop in LLMAgentRunner
+        # This step enables the pytest feedback loop in LLMAgentRunner.
         self._insert_before_final_step(
             blueprint, "verify_fix_against_generated_tests"
         )
@@ -110,26 +94,19 @@ class BlueprintMutator:
 
     def _mutate_comments_blueprint(self, blueprint: AgentBlueprint) -> AgentBlueprint:
         """
-        Documentation mutation (updated).
+        Documentation mutation
 
-        Added steps:
-        - verify_docstring_coverage   ← ACTIVE: triggers the docstring-checker
-                                        feedback loop in LLMAgentRunner.
-                                        This is the key behavioural difference
-                                        between base and mutated blueprints.
-        - check_comments_explain_why  ← quality check (unchanged)
-        - remove_obvious_comments     ← noise filter (unchanged)
 
-        The stopping condition now includes a measurable coverage threshold
+        The stopping condition includes a measurable coverage threshold
         (0.80) that the feedback loop uses to decide when to stop revising.
         This makes the stopping criterion evidence-driven rather than based on
         a fixed iteration count.
         """
-        # Active step — triggers docstring coverage loop in LLMAgentRunner
+        # This step enables the docstring coverage loop in LLMAgentRunner.
         self._insert_before_final_step(
             blueprint, "verify_docstring_coverage"
         )
-        # Quality checks (passive — do not trigger a separate loop)
+        # Passive quality checks for the resulting blueprint.
         self._insert_before_final_step(
             blueprint, "check_comments_explain_why_not_only_what"
         )
@@ -142,7 +119,7 @@ class BlueprintMutator:
         blueprint.output_schema["docstring_coverage_verified"] = "bool"
 
         blueprint.stopping_condition["maximum_redundant_comment_rate"] = 0.15
-        # Coverage threshold — used by the runner's stopping criterion
+        # Coverage threshold used by the runner's stopping criterion.
         blueprint.stopping_condition["minimum_docstring_coverage"] = 0.80
 
         return self._mark_mutated(blueprint, "comment_quality_and_coverage")

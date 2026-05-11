@@ -1,13 +1,10 @@
 """
-tools.py — Real executable tools available to the deterministic AgentRunner.
+Executable tools used by the deterministic AgentRunner.
 
-Each tool accepts a task_input string and returns a ToolResult. The runner
-selects tools based on the current workflow step name. Tools actually execute:
-pytest runs in a subprocess, static analysis uses ast.parse, secret detection
-uses regex. No LLM is involved.
-
-All tools are sandboxed: subprocess calls have a timeout, and no user code is
-exec()-d inside the main process.
+Each tool accepts a task input string and returns a ToolResult. The tools are
+implemented without LLM calls: pytest runs in a subprocess, static analysis
+uses ast.parse, and secret detection uses regular expressions. Subprocess work
+uses timeouts, and user code is not executed inside the main process.
 """
 
 import ast
@@ -17,12 +14,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-
-
-# ---------------------------------------------------------------------------
-# Result type
-# ---------------------------------------------------------------------------
-
+# Tool result type
 @dataclass
 class ToolResult:
     tool_name: str
@@ -30,34 +22,12 @@ class ToolResult:
     output: Any          # structured payload, tool-specific
     raw_text: str = ""   # human-readable summary
     error: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# Tool: pytest_runner
-# ---------------------------------------------------------------------------
-
+# pytest_runner
 def _infer_expected(fn_name: str, args: tuple) -> Optional[Any]:
     """
     Infer the expected return value for a function call from its name and args.
-    Returns None if no inference is possible — caller falls back to not-None check.
+    Returns None if no inference is possible - caller falls back to not-None check.
 
-    Covers the most common patterns in the benchmark dataset:
-      add/sum/plus/total  → sum of args
-      subtract/diff/minus → args[0] - args[1]
-      multiply/product    → product of args
-      double              → args[0] * 2
-      square              → args[0] ** 2
-      negate              → -args[0]
-      plus_one / increment → args[0] + 1
-      is_even             → args[0] % 2 == 0
-      is_zero             → args[0] == 0
-      absolute            → abs(args[0])
-      maximum / max_val   → max(args)
-      average             → sum(args) / len(args)
-      factorial           → math.factorial(args[0]) for small n
-      count_up_to         → list(range(1, args[0]+1))
-      repeat(s, n)        → skipped (string arg)
-      is_adult            → args[0] >= 18
     """
     import math
     name = fn_name.lower()
@@ -67,7 +37,7 @@ def _infer_expected(fn_name: str, args: tuple) -> Optional[Any]:
             return None
 
         a = args[0]
-        # Skip if any arg is not a number
+        # Only infer expected values for numeric argument sets.
         if not all(isinstance(x, (int, float)) for x in args):
             return None
 
@@ -124,7 +94,7 @@ def pytest_runner(task_input: str) -> ToolResult:
     1. If the code has  # expected(a, b): value  comments, use those assertions.
     2. If the function name implies a known mathematical operation, infer the
        expected output and generate a value-equality assertion.
-    3. Otherwise, assert the return value is not None — catches missing-return
+    3. Otherwise, assert the return value is not None - catches missing-return
        bugs without requiring knowledge of the correct output.
 
     Returns pass/fail and counts of passed/failed tests.
@@ -164,7 +134,7 @@ def pytest_runner(task_input: str) -> ToolResult:
     else:
         arg_sets = [tuple(range(1, n_args + 1))]
 
-    # Parse expected-output hints from comments
+    # Parse explicit expected-output hints from comments.
     explicit: Dict[str, Any] = {}
     for line in task_input.splitlines():
         m = re.search(r"#\s*expected(?:\(([^)]+)\))?:\s*(.+)", line)
@@ -184,7 +154,7 @@ def pytest_runner(task_input: str) -> ToolResult:
         key = str(args)
 
         if key in explicit:
-            # Priority 1: explicit comment hint
+            # Use explicit expected-output hints first.
             lines += [
                 f"def test_{fn_name}_{safe}():",
                 f"    assert {fn_name}({call}) == {repr(explicit[key])}",
@@ -193,14 +163,14 @@ def pytest_runner(task_input: str) -> ToolResult:
         else:
             inferred = _infer_expected(fn_name, args)
             if inferred is not None:
-                # Priority 2: inferred from function name
+                # Then infer expected output from the function name.
                 lines += [
                     f"def test_{fn_name}_{safe}():",
                     f"    assert {fn_name}({call}) == {repr(inferred)}",
                     "",
                 ]
             else:
-                # Priority 3: at minimum, assert not None (catches missing-return bugs)
+                # Otherwise check that the function returns a value.
                 lines += [
                     f"def test_{fn_name}_{safe}_not_none():",
                     f"    result = {fn_name}({call})",
@@ -238,12 +208,7 @@ def pytest_runner(task_input: str) -> ToolResult:
             output={"passed": False, "tests_run": 0},
             raw_text="Pytest timed out.", error="Timeout",
         )
-
-
-# ---------------------------------------------------------------------------
 # Tool: static_checker
-# ---------------------------------------------------------------------------
-
 def static_checker(task_input: str) -> ToolResult:
     """
     AST-based static analysis. Detects:
@@ -322,12 +287,7 @@ def static_checker(task_input: str) -> ToolResult:
         output={"issues": issues, "issue_count": len(issues)},
         raw_text=raw,
     )
-
-
-# ---------------------------------------------------------------------------
 # Tool: complexity_checker
-# ---------------------------------------------------------------------------
-
 def complexity_checker(task_input: str) -> ToolResult:
     """
     Computes branch-count cyclomatic complexity per function via AST.
@@ -368,12 +328,7 @@ def complexity_checker(task_input: str) -> ToolResult:
         output={"functions": results, "flagged_count": len(flagged)},
         raw_text=raw,
     )
-
-
-# ---------------------------------------------------------------------------
 # Tool: secret_detector
-# ---------------------------------------------------------------------------
-
 _SECRET_PATTERNS = [
     ("api_key_assignment", re.compile(r'(?i)(api_?key|apikey)\s*=\s*["\'][A-Za-z0-9_\-]{16,}["\']')),
     ("token_assignment",   re.compile(r'(?i)(token|secret|password|passwd|pwd)\s*=\s*["\'][A-Za-z0-9_\-\.]{8,}["\']')),
@@ -408,12 +363,7 @@ def secret_detector(task_input: str) -> ToolResult:
         output={"findings": findings, "finding_count": len(findings)},
         raw_text=raw,
     )
-
-
-# ---------------------------------------------------------------------------
 # Tool: docstring_checker
-# ---------------------------------------------------------------------------
-
 def docstring_checker(task_input: str) -> ToolResult:
     """
     Checks every function and class for a docstring via AST.
@@ -461,7 +411,6 @@ def docstring_checker(task_input: str) -> ToolResult:
     )
 
 
-
 def extract_fix_from_code(raw_text: str) -> "Optional[str]":
     """
     Extract the first syntactically valid Python function from raw text.
@@ -481,7 +430,7 @@ def extract_fix_from_code(raw_text: str) -> "Optional[str]":
             except SyntaxError:
                 pass
 
-    # Priority 2: bare def block — collect lines from first def until blank line
+    # Priority 2: bare def block - collect lines from first def until blank line
     # after a return statement
     lines = raw_text.splitlines()
     collected: list = []
@@ -506,11 +455,7 @@ def extract_fix_from_code(raw_text: str) -> "Optional[str]":
             pass
 
     return None
-
-# ---------------------------------------------------------------------------
 # Registry
-# ---------------------------------------------------------------------------
-
 TOOL_REGISTRY: Dict[str, callable] = {
     "pytest_runner":      pytest_runner,
     "static_checker":     static_checker,

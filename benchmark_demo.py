@@ -1,17 +1,10 @@
 """
-benchmark_demo.py — Stem agent pipeline benchmark.
+Run the deterministic stem-agent pipeline on the supported task categories.
 
-Runs the full deterministic pipeline across all five supported task categories
-and reports:
-
-  1. Blueprint structural scores (base vs mutated)
-  2. Classification method per task (llm | keyword | fallback) and LLM reasoning
-  3. Classifier agreement — whether LLM and keyword routing would have agreed
-
-The classification comparison is new. It answers the question: how much was
-the keyword classifier missing? If the LLM classifier routes a task differently
-than keywords would, that is direct evidence that semantic reading adds value
-over enumeration.
+The benchmark reports base and mutated blueprint scores, the classifier used
+for each task, and whether semantic routing agrees with the keyword fallback.
+It is intended as a quick sanity check for the full pipeline, not as the main
+task-level evaluation.
 """
 
 import json
@@ -58,15 +51,6 @@ BENCHMARK_TASKS = [
 class BenchmarkDemo:
     """
     Runs the full stem-agent pipeline on the benchmark task set.
-
-    For each task:
-    1. Classify with both LLM and keyword classifiers (to measure agreement)
-    2. Profile the domain
-    3. Generate base blueprint
-    4. Mutate
-    5. Evaluate base vs mutated
-    6. Select stronger blueprint
-    7. Execute with deterministic runner
     """
 
     def __init__(self) -> None:
@@ -88,10 +72,10 @@ class BenchmarkDemo:
     def _run_case(self, task_case: Dict[str, str]) -> Dict[str, Any]:
         task_text = task_case["task"]
 
-        # --- Classification (new) ---
+        # Compare semantic routing with the deterministic fallback.
         llm_classification = self.classifier.classify(task_text)
 
-        # Also run keyword fallback explicitly so we can compare
+        # Run the fallback explicitly so the routing decision is inspectable.
         keyword_classification = _classify_with_keywords(
             " ".join(task_text.lower().split())
         )
@@ -101,7 +85,7 @@ class BenchmarkDemo:
             and llm_classification.subdomain == keyword_classification.subdomain
         )
 
-        # --- Rest of pipeline (unchanged) ---
+        # Generate, mutate, evaluate, and execute the selected blueprint.
         profile = self.profiler.profile(task_text)
         base_blueprint = self.architecture_generator.generate(profile)
         mutated_blueprint = self.mutator.mutate(base_blueprint)
@@ -122,7 +106,7 @@ class BenchmarkDemo:
         return {
             "task_id": task_case["id"],
             "task": task_text,
-            # Classification
+            # Compare semantic routing with the deterministic fallback.
             "classification_method": llm_classification.classification_method,
             "llm_domain": llm_classification.domain,
             "llm_subdomain": llm_classification.subdomain,
@@ -131,7 +115,7 @@ class BenchmarkDemo:
             "keyword_domain": keyword_classification.domain,
             "keyword_subdomain": keyword_classification.subdomain,
             "classifiers_agree": classifiers_agree,
-            # Blueprint scores
+            # Blueprint evaluation
             "domain": profile.domain,
             "subdomain": profile.subdomain,
             "base_blueprint": base_blueprint.name,
@@ -141,7 +125,7 @@ class BenchmarkDemo:
             "selected": selected,
             "selected_blueprint": selected_blueprint.name,
             "selected_score": selected_eval.score,
-            # Execution
+            # Runner trace
             "executed_steps": len(run_result.get("executed_steps", [])),
             "final_status": run_result["final_status"],
             "base_failed_checks": base_eval.failed_checks,
@@ -149,20 +133,18 @@ class BenchmarkDemo:
         }
 
 
-# ---------------------------------------------------------------------------
 # Reporting helpers
-# ---------------------------------------------------------------------------
 
 def _print_case(result: Dict[str, Any]) -> None:
-    agree_str = "✓ agree" if result["classifiers_agree"] else "✗ DISAGREE"
+    agree_str = " agree" if result["classifiers_agree"] else " DISAGREE"
     method = result["classification_method"]
     reasoning = result["llm_reasoning"]
     print(
         f"\n[{result['task_id']}]"
         f"\n  Classification method : {method}"
-        f"\n  LLM    → {result['llm_domain']} / {result['llm_subdomain']}"
+        f"\n  LLM    -> {result['llm_domain']} / {result['llm_subdomain']}"
         f"  (confidence {result['llm_confidence']:.2f})"
-        f"\n  Keyword→ {result['keyword_domain']} / {result['keyword_subdomain']}"
+        f"\n  Keyword-> {result['keyword_domain']} / {result['keyword_subdomain']}"
         f"\n  Agreement             : {agree_str}"
     )
     if reasoning:
@@ -187,7 +169,7 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
     lines = [
         "# Stem Agent Benchmark Summary",
         "",
-        "## Classification method comparison",
+        "## Compare semantic routing with the deterministic fallback. method comparison",
         "",
         f"Across {n_tasks} benchmark tasks, the LLM classifier was used in "
         f"**{n_llm}** cases. "
@@ -199,10 +181,10 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
     ]
 
     for r in results:
-        agree_mark = "✓" if r["classifiers_agree"] else "✗"
+        agree_mark = "yes" if r["classifiers_agree"] else "no"
         llm_route = f"{r['llm_domain']} / {r['llm_subdomain']}"
         kw_route = f"{r['keyword_domain']} / {r['keyword_subdomain']}"
-        reasoning = r["llm_reasoning"].replace("|", "/") if r["llm_reasoning"] else "—"
+        reasoning = r["llm_reasoning"].replace("|", "/") if r["llm_reasoning"] else "-"
         lines.append(
             f"| {r['task_id']} | {r['classification_method']} "
             f"| {llm_route} | {kw_route} | {agree_mark} | {reasoning} |"
@@ -290,9 +272,9 @@ def main() -> None:
     print(f"  Tasks run             : {len(results)}")
     print(f"  LLM classifier used   : {n_llm}/{len(results)}")
     print(f"  Classifier disagreed  : {n_disagree}/{len(results)}")
-    print("  Saved JSON  → results/benchmark_summary.json")
-    print("  Saved MD    → results/benchmark_summary.md")
-    print("  Blueprints  → results/selected_blueprints/")
+    print("  Saved JSON:   results/benchmark_summary.json")
+    print("  Saved MD:     results/benchmark_summary.md")
+    print("  Blueprints:   results/selected_blueprints/")
 
 
 if __name__ == "__main__":

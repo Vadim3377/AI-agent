@@ -18,11 +18,11 @@ from models import AgentBlueprint, DomainProfile
 from tools import run_tool, ToolResult, TOOL_REGISTRY
 
 
-# ---------------------------------------------------------------------------
-# Step → tool routing table
+
+# Step -> tool routing table
 # Each entry: (list_of_keywords_in_step_name, tool_name)
 # First match wins.
-# ---------------------------------------------------------------------------
+
 
 _STEP_TO_TOOL: List[tuple] = [
     (["run_tests", "execute_tests", "pytest", "test_harness", "verify_fix",
@@ -49,9 +49,8 @@ def _resolve_tool_for_step(step: str, blueprint_tools: List[str]) -> Optional[st
     return None
 
 
-# ---------------------------------------------------------------------------
+
 # Runner
-# ---------------------------------------------------------------------------
 
 class AgentRunner:
     """
@@ -105,9 +104,8 @@ class AgentRunner:
             "final_status": "completed",
         }
 
-    # ------------------------------------------------------------------
+
     # Internal helpers
-    # ------------------------------------------------------------------
 
     def _format_tool_result(self, result: ToolResult) -> str:
         status = "passed" if result.success else "failed"

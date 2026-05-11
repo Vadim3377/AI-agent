@@ -1,26 +1,10 @@
 """
-domain_classifier.py — LLM-powered domain classifier.
+Classify task prompts into supported stem-agent domains.
 
-Previous version: keyword lists. Hard-coded signals, deterministic scoring,
-no ability to handle novel phrasing.
-
-This version: the classifier sends the raw task prompt to the LLM and asks it
-to reason about domain, subdomain, intent, and confidence. The LLM proposes
-the classification; this module validates and normalises the response.
-
-Why this matters for the stem-agent framing
--------------------------------------------
-A stem cell reads chemical signals from its environment — it does not consult
-a hard-coded lookup table of cell types. The keyword classifier simulates
-environment-reading by enumeration; the LLM classifier actually reads the
-prompt semantically, the way a real agent would need to.
-
-The keyword fallback is retained for two reasons:
-1. The pipeline must still run without an API key (deterministic path).
-2. It gives a measurable before/after baseline: keyword score vs LLM score.
-
-When OPENAI_API_KEY is set, the LLM path is used. Otherwise the keyword
-fallback runs silently.
+When OPENAI_API_KEY is available, the classifier asks an LLM to route the raw
+task prompt into a domain and subdomain with a short justification. Without an
+API key, it uses a deterministic keyword fallback. The fallback keeps the
+pipeline runnable and provides a baseline for comparison.
 """
 
 from __future__ import annotations
@@ -34,9 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
+# Supported routing targets
 
 SUPPORTED_DOMAINS = {
     "quality_assurance": [
@@ -64,15 +46,13 @@ class ClassificationResult:
     llm_reasoning: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
-# LLM classification
-# ---------------------------------------------------------------------------
+# LLM routing
 
 _CLASSIFICATION_SYSTEM_PROMPT = """\
 You are the classification layer of a stem agent. Your only job is to read a
 task description and determine what kind of specialist agent is needed.
 
-Return ONLY a JSON object — no markdown fences, no preamble. The object must
+Return ONLY a JSON object - no markdown fences, no preamble. The object must
 have exactly these fields:
 
 {
@@ -109,7 +89,7 @@ def _classify_with_llm(prompt: str) -> Optional[ClassificationResult]:
         )
         raw = response.output_text.strip()
 
-        # Strip accidental markdown fences
+        # Accept fenced JSON if the model returns it despite the prompt.
         if raw.startswith("```"):
             lines = raw.splitlines()
             raw = "\n".join(
@@ -124,7 +104,7 @@ def _classify_with_llm(prompt: str) -> Optional[ClassificationResult]:
         confidence = float(data.get("confidence", 0.5))
         reasoning = data.get("reasoning", "")
 
-        # Validate against allowed values
+        # Clamp unexpected model output to the supported domain set.
         if domain not in SUPPORTED_DOMAINS:
             domain = "quality_assurance"
             confidence = min(confidence, 0.4)
@@ -139,7 +119,7 @@ def _classify_with_llm(prompt: str) -> Optional[ClassificationResult]:
             subdomain=subdomain,
             intent=intent,
             confidence=round(confidence, 2),
-            matched_signals=[],          # LLM path uses reasoning instead
+            matched_signals=[],          # LLM routing is explained by llm_reasoning.
             classification_method="llm",
             llm_reasoning=reasoning,
         )
@@ -148,9 +128,7 @@ def _classify_with_llm(prompt: str) -> Optional[ClassificationResult]:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Keyword fallback (unchanged from original, kept for reproducibility)
-# ---------------------------------------------------------------------------
+# Deterministic fallback
 
 def _score_category(
     text: str,
@@ -219,9 +197,7 @@ def _classify_with_keywords(text: str) -> ClassificationResult:
     return best
 
 
-# ---------------------------------------------------------------------------
 # Public classifier
-# ---------------------------------------------------------------------------
 
 class DomainClassifier:
     """

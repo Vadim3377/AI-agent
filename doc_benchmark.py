@@ -1,41 +1,11 @@
 """
-doc_benchmark.py — Documentation feedback loop benchmark.
+Benchmark the documentation feedback loop.
 
-Root cause of previous 100% flat results
------------------------------------------
-The base blueprint runs _run_single_shot(), which returns a JSON string in
-`raw_output` (the documentation schema asks for fields like `docstrings_added`).
-The mutated blueprint runs _run_documentation_loop(), which returns actual
-Python code in `final_code`.
-
-The benchmark was passing the JSON string to the AST checker, which found
-zero Python symbols (total=0), defaulting coverage to 1.0 = 100%. Both
-paths appeared identical because neither was being measured correctly.
-
-Fix (two parts)
----------------
-1. The base blueprint is run via a DIRECT prompt that explicitly asks for
-   Python code back, not JSON. This is done by temporarily overriding the
-   blueprint subdomain to force _run_documentation_loop even for the base,
-   OR by using a separate direct LLM call for the base that returns code.
-
-   Simpler: use a dedicated _run_doc_single_shot() call that bypasses the
-   JSON schema entirely and asks directly for code.
-
-2. The code extractor now tries (in order):
-   a. final_code key (mutated loop path)
-   b. Largest ```python ... ``` block in raw_output
-   c. Largest ``` ... ``` block in raw_output
-   d. raw_output itself if it parses as valid Python
-
-Quality-aware scoring
-----------------------
-A docstring is COMPLETE only if it has:
-- Args: section   for functions that take parameters
-- Returns: section for functions that return a value
-One-liner docstrings like '''Return the mean.''' score 0 on quality coverage.
-This is where the LLM predictably falls short on helper functions,
-giving the feedback loop something real to improve.
+The benchmark uses multi-function Python modules and measures quality-aware
+docstring coverage. A function docstring is complete only when it includes
+argument and return information where the function signature and body require
+it. This gives the feedback loop a concrete target instead of rewarding short,
+generic docstrings.
 """
 
 import ast
@@ -49,9 +19,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
+
 # 10 multi-function modules
-# ---------------------------------------------------------------------------
+
 
 DOC_TASKS = [
     {
@@ -404,9 +374,7 @@ DOC_TASKS = [
     },
 ]
 
-# ---------------------------------------------------------------------------
-# Direct LLM call for base blueprint — returns code, not JSON
-# ---------------------------------------------------------------------------
+# Direct LLM call for base blueprint - returns code, not JSON
 
 _BASE_DOC_PROMPT = """\
 Add Google-style docstrings to every public function and class in the code below.
@@ -434,9 +402,7 @@ def _call_llm_for_code(client, model: str, code: str) -> str:
     return response.output_text
 
 
-# ---------------------------------------------------------------------------
 # Code extraction from LLM response
-# ---------------------------------------------------------------------------
 
 def _extract_python_code(raw: str) -> str:
     """
@@ -468,9 +434,7 @@ def _extract_python_code(raw: str) -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
 # Quality-aware docstring coverage checker
-# ---------------------------------------------------------------------------
 
 def _has_args_section(doc: str) -> bool:
     return bool(re.search(r"(Args|Arguments|Parameters)\s*:", doc, re.IGNORECASE))
@@ -495,7 +459,7 @@ def _node_has_return(node: ast.FunctionDef) -> bool:
 
 def _get_public_nodes(tree: ast.Module) -> List[Any]:
     """
-    Return module-level and class-level nodes only — no nested functions.
+    Return module-level and class-level nodes only - no nested functions.
     Mirrors the runner's checker exactly so both measure the same symbols.
     """
     nodes: List[Any] = []
@@ -512,7 +476,7 @@ def _get_public_nodes(tree: ast.Module) -> List[Any]:
 
 def _measure_quality_coverage(code: str) -> Dict[str, Any]:
     """
-    Quality-aware docstring coverage — identical standard to the runner.
+    Quality-aware docstring coverage - identical standard to the runner.
     A symbol is complete only if it has Args/Returns sections where required.
     Only top-level and class-level symbols are counted (no nested functions).
     """
@@ -586,9 +550,7 @@ def _measure_quality_coverage(code: str) -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
 # Benchmark runner
-# ---------------------------------------------------------------------------
 
 def run_doc_benchmark() -> List[Dict[str, Any]]:
     import os
@@ -624,7 +586,7 @@ def run_doc_benchmark() -> List[Dict[str, Any]]:
             flush=True,
         )
 
-        # --- Base: direct LLM call asking for code, not JSON ---
+        # Base: direct LLM call asking for code, not JSON
         # The base blueprint's single-shot path returns JSON because the
         # documentation schema asks for structured fields. To measure base
         # quality fairly we use a direct prompt that returns Python code.
@@ -635,7 +597,7 @@ def run_doc_benchmark() -> List[Dict[str, Any]]:
             "present": 0, "incomplete": [], "missing": ["extraction_failed"],
         }
 
-        # --- Mutated: uses the documentation feedback loop ---
+        # Mutated: uses the documentation feedback loop
         mutated_result = llm_runner.run(mutated_blueprint, code)
         mutated_raw = mutated_result.get("final_code") or mutated_result.get("raw_output", "")
         mutated_code = _extract_python_code(mutated_raw) if mutated_raw else ""
@@ -672,9 +634,7 @@ def run_doc_benchmark() -> List[Dict[str, Any]]:
     return results
 
 
-# ---------------------------------------------------------------------------
 # Reporting
-# ---------------------------------------------------------------------------
 
 def _avg(results: List[Dict], key: str) -> float:
     vals = [r[key] for r in results if isinstance(r.get(key), (int, float))]
@@ -712,7 +672,7 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
     ]
 
     for r in results:
-        improved = "✓" if r["coverage_improved"] else "—"
+        improved = "yes" if r["coverage_improved"] else "-"
         lines.append(
             f"| {r['task_id']}"
             f" | {r['total_symbols']}"
@@ -774,8 +734,8 @@ def main() -> None:
     print(f"Base blueprint avg quality coverage   : {avg_base:.0%}")
     print(f"Mutated blueprint avg quality coverage: {avg_mutated:.0%}")
     print(f"Improved in                           : {n_improved}/{len(results)} tasks")
-    print("Saved → results/doc_benchmark.json")
-    print("Saved → results/doc_benchmark.md")
+    print("Saved -> results/doc_benchmark.json")
+    print("Saved -> results/doc_benchmark.md")
 
 
 if __name__ == "__main__":

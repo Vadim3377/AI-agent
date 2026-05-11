@@ -1,18 +1,11 @@
 """
-mutation_loop.py — Multi-round blueprint evolution with real tool feedback.
+Evolve an AgentBlueprint through bounded mutation and evaluation.
 
-Replaces the single BlueprintMutator + BlueprintEvaluator call in StemShell
-with an iterative loop:
-
-    base → evaluate → mutate → evaluate → keep best → repeat
-
-The loop stops when:
-  - score improvement falls below MIN_IMPROVEMENT (plateau), or
-  - max_rounds is reached.
-
-Scoring uses BlueprintEvaluator's two-layer score: structural (40%) +
-task-level from real tool results (60%). This means the stopping criterion
-is grounded in observable tool output, not structural self-assessment.
+Each round mutates the current blueprint, evaluates the candidate, and keeps
+the best version. Scores combine structural checks with task-level evidence
+from real tools when task input is available. The loop stops when improvement
+falls below the configured threshold or the maximum number of rounds is
+reached.
 """
 
 from __future__ import annotations
@@ -55,7 +48,7 @@ class EvolutionResult:
         rows = [header, sep]
         for r in self.rounds:
             name = (r.blueprint_name[:49] + "...") if len(r.blueprint_name) > 52 else r.blueprint_name
-            tick = "  ✓" if r.selected else ""
+            tick = "  yes" if r.selected else ""
             rows.append(
                 f"{r.round_number:<4} {name:<52} {r.structural_score:>7.2f} "
                 f"{r.task_score:>6.2f} {r.combined_score:>6.2f}{tick}"
@@ -69,7 +62,6 @@ class MutationLoop:
     Multi-round evolution loop.
 
     Parameters
-    ----------
     max_rounds : int
         Maximum mutation rounds (default 4).
     min_improvement : float
@@ -104,7 +96,7 @@ class MutationLoop:
         """
         rounds: List[EvolutionRound] = []
 
-        # Round 0: evaluate the base blueprint
+        # Evaluate the base blueprint before applying mutations.
         base_eval = self._evaluate(blueprint, task_input)
         best_bp = blueprint
         best_score = base_eval.combined_score

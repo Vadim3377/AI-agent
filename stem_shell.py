@@ -9,7 +9,6 @@ class StemShell:
     """
     The minimal stem agent coordinator.
 
-    It does not solve domain tasks directly. Instead it:
     1. Receives a task-family description.
     2. Uses DomainProfiler (which calls DomainClassifier) to read the task environment.
     3. Uses ArchitectureGenerator to create an initial specialised-agent blueprint.

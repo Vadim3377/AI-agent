@@ -32,9 +32,7 @@ class DomainProfiler:
             return self._deep_research_profile(classification)
         return self._generic_profile(classification)
 
-    # ------------------------------------------------------------------
     # Domain-specific profiles
-    # ------------------------------------------------------------------
 
     def _debugging_profile(self, classification: ClassificationResult) -> DomainProfile:
         return DomainProfile(

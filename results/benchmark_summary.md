@@ -1,16 +1,16 @@
 # Stem Agent Benchmark Summary
 
-## Classification method comparison
+## Compare semantic routing with the deterministic fallback. method comparison
 
 Across 5 benchmark tasks, the LLM classifier was used in **5** cases. In **0** case(s) the LLM and keyword classifiers disagreed on domain or subdomain.
 
 | Task | Method | LLM route | Keyword route | Agree | LLM reasoning |
 |---|---|---|---|---|---|
-| debugging | llm | quality_assurance / debugging | quality_assurance / debugging | ✓ | The task specifically asks to debug a Python function with incorrect output causing a test failure, which aligns directly with debugging in quality assurance. |
-| code_quality_cleanup | llm | quality_assurance / code_quality_cleanup | quality_assurance / code_quality_cleanup | ✓ | The task focuses on improving code quality by removing dead code and simplifying logic, which fits well into code quality cleanup. |
-| comments_and_documentation | llm | quality_assurance / comments_and_documentation | quality_assurance / comments_and_documentation | ✓ | The task explicitly requires adding comments and docstrings to explain the code, fitting clearly within comments_and_documentation under quality_assurance. |
-| security | llm | security / dangerous_operations_and_data_breaches | security / dangerous_operations_and_data_breaches | ✓ | The task explicitly asks to check for dangerous operations, API key leaks, passwords, and possible data breaches, which aligns closely with security and specifically dangerous operations and data breaches subdomain. |
-| code_research | llm | deep_research / code_research | deep_research / code_research | ✓ | The task involves researching documentation and examples related to code implementation, which aligns with deep research in code_research. |
+| debugging | llm | quality_assurance / debugging | quality_assurance / debugging | yes | The task specifically involves debugging a Python function that produces incorrect output and fails testing, making debugging the clear focus. |
+| code_quality_cleanup | llm | quality_assurance / code_quality_cleanup | quality_assurance / code_quality_cleanup | yes | The task explicitly involves removing dead code, simplifying logic, and improving readability, which falls under quality assurance and code quality cleanup. |
+| comments_and_documentation | llm | quality_assurance / comments_and_documentation | quality_assurance / comments_and_documentation | yes | The task explicitly requires adding comments and docstrings to explain the code, which aligns with comments and documentation in quality assurance. |
+| security | llm | security / dangerous_operations_and_data_breaches | security / dangerous_operations_and_data_breaches | yes | The task explicitly requests checking for dangerous operations, API key leaks, passwords, and data breaches, which falls clearly under security and data protection. |
+| code_research | llm | deep_research / code_research | deep_research / code_research | yes | The task involves investigating and gathering information on implementing a Python plugin system, which is best suited to deep research in code. |
 
 ## Blueprint evolution
 

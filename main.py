@@ -70,10 +70,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-
-    # ------------------------------------------------------------------
     # Run an existing blueprint
-    # ------------------------------------------------------------------
     if args.run_blueprint:
         if not args.input:
             raise ValueError("--input is required when using --run-blueprint")
@@ -104,9 +101,7 @@ def main() -> None:
         print(f"Saved to    : {args.run_output}")
         return
 
-    # ------------------------------------------------------------------
     # Generate (and optionally evaluate) a blueprint from a task prompt
-    # ------------------------------------------------------------------
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)

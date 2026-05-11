@@ -1,22 +1,11 @@
 """
-blueprint_evaluator.py — Two-layer blueprint evaluation.
+Evaluate generated agent blueprints.
 
-Layer 1 — Structural (40% weight): unchanged from original.
-Checks blueprint shape: workflow length, tools, schema, stopping conditions,
-domain-specific fields, safeguard steps, subdomain alignment.
-
-Layer 2 — Task-level (60% weight): NEW.
-Uses real tool results from AgentRunner to score whether the blueprint
-actually did useful work on the task input. Scores depend on observable
-tool output (pytest pass/fail, static issue count, docstring coverage,
-secret findings) — not on properties the evaluator itself defines.
-
-Combined score = 0.4 * structural + 0.6 * task_level.
-If no tool results are provided, task_level falls back to structural_score
-so the evaluator degrades gracefully for runs without task input.
-
-The .score property on the result always returns combined_score, preserving
-backward compatibility with all existing callers.
+The evaluator combines structural checks with task-level evidence from tools.
+Structural checks validate the blueprint shape; task checks measure observable
+execution results such as pytest pass rate, docstring coverage, and secret
+scanner findings. If no tool results are provided, the task score falls back
+to the structural score so existing structural-only runs still work.
 """
 
 from __future__ import annotations
@@ -27,9 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from models import AgentBlueprint
 
 
-# ---------------------------------------------------------------------------
 # Result dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class EvaluationResult:
@@ -43,20 +30,17 @@ class EvaluationResult:
 
     @property
     def score(self) -> float:
-        """Backward-compatible accessor — returns combined_score."""
+        """Backward-compatible accessor - returns combined_score."""
         return self.combined_score
 
 
-# ---------------------------------------------------------------------------
 # Evaluator
-# ---------------------------------------------------------------------------
 
 class BlueprintEvaluator:
     """
     Two-layer evaluator.
 
     Usage
-    -----
     evaluator = BlueprintEvaluator()
 
     # Structural only (original behaviour, no tool results):
@@ -81,7 +65,7 @@ class BlueprintEvaluator:
             task, evidence = self._task_checks(blueprint, tool_results)
         else:
             task = structural
-            evidence = ["No tool results provided — task score mirrors structural score."]
+            evidence = ["No tool results provided - task score mirrors structural score."]
 
         combined = round(0.4 * structural + 0.6 * task, 2)
 
@@ -102,9 +86,7 @@ class BlueprintEvaluator:
             notes=notes,
         )
 
-    # ------------------------------------------------------------------
     # Layer 1: structural checks
-    # ------------------------------------------------------------------
 
     def _structural_checks(self, bp: AgentBlueprint) -> Tuple[List[str], List[str]]:
         checks = [
@@ -165,9 +147,7 @@ class BlueprintEvaluator:
         signals = signals_by_subdomain.get(bp.domain_profile.subdomain)
         return True if signals is None else sum(1 for s in signals if s in text) >= 2
 
-    # ------------------------------------------------------------------
     # Layer 2: task-level checks using real tool results
-    # ------------------------------------------------------------------
 
     def _task_checks(
         self,

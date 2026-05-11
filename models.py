@@ -12,8 +12,7 @@ class DomainProfile:
     candidate_tools: List[str]
     evaluation_metrics: List[str]
     reasoning: str
-    # Classification metadata — carried through from DomainClassifier
-    # so callers don't need to re-classify to find out how routing happened.
+    # Routing metadata preserved from DomainClassifier.
     classification_method: str = "keyword"   # "llm" | "keyword" | "fallback"
     llm_reasoning: str = ""                  # LLM's one-sentence justification
 

@@ -1,25 +1,10 @@
 """
-task_benchmark.py -- Real agent benchmark for the debugging specialist.
+Benchmark debugging performance for base and mutated blueprints.
 
-This is the definitive before/after comparison. It tests whether the stem
-agent's mutation loop produces a specialist that can actually fix bugs better.
-
-How it works
-------------
-For each of the 30 bug cases:
-  1. Feed the BUGGY code to the base blueprint agent (LLMAgentRunner)
-  2. Extract the suggested_fix from the agent's output
-  3. Run pytest on the suggested fix (not the ground-truth fixed code)
-  4. Repeat with the SELECTED (mutated) blueprint agent
-  5. Compare fix quality: base vs selected
-
-This directly answers:
-  "Does a better blueprint produce better fixes?"
-
-Run
----
-  python task_benchmark.py              # LLM mode (requires OPENAI_API_KEY)
-  python task_benchmark.py --no-llm    # Static-only mode (no API key needed)
+For each bug case, the script runs the base blueprint and the selected mutated
+blueprint with the same LLM runner, extracts each suggested fix, and executes
+pytest on the proposed code. This is the main before/after comparison for the
+debugging specialist.
 """
 
 import argparse
@@ -34,12 +19,7 @@ from tools import pytest_runner, static_checker
 from domain_profiler import DomainProfiler
 from architecture_generator import ArchitectureGenerator
 from mutation_loop import MutationLoop
-
-
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-
+# Benchmark dataset
 @dataclass
 class BugCase:
     id: str
@@ -153,12 +133,7 @@ DATASET: List[BugCase] = [
             "def is_positive(x):\n    return x > 0\n\ndef check(x):\n    if is_positive(x) == 1:\n        return 'yes'\n    return 'no'",
             "def is_positive(x):\n    return x > 0\n\ndef check(x):\n    if is_positive(x):\n        return 'yes'\n    return 'no'", []),
 ]
-
-
-# ---------------------------------------------------------------------------
 # Fix extraction from LLM output
-# ---------------------------------------------------------------------------
-
 def extract_fix(parsed_output: Optional[Dict]) -> Optional[str]:
     if not parsed_output or not isinstance(parsed_output, dict):
         return None
@@ -186,7 +161,7 @@ def _clean_code(code: str) -> str:
 
 
 def _extract_first_function(code: str) -> "Optional[str]":
-    """Extract just the first syntactically valid function from messy code."""
+    """Return the first syntactically valid function found in model output."""
     import ast as _ast
     lines = code.splitlines()
     for start in range(len(lines)):
@@ -223,12 +198,7 @@ def extract_fix_from_raw(raw_text: str) -> "Optional[str]":
     if collected and any("return" in l for l in collected):
         return "\n".join(collected).strip()
     return None
-
-
-# ---------------------------------------------------------------------------
 # Per-case scoring
-# ---------------------------------------------------------------------------
-
 @dataclass
 class CaseResult:
     case_id: str
@@ -325,12 +295,7 @@ def evaluate_case(case: BugCase, blueprint, llm_runner, use_llm: bool) -> CaseRe
         agent_score=agent_score, rounds_taken=rounds_taken,
         first_attempt_passed=first_attempt_passed, raw_output=raw_output,
     )
-
-
-# ---------------------------------------------------------------------------
 # Full benchmark
-# ---------------------------------------------------------------------------
-
 def run_agent_benchmark(use_llm: bool = True) -> Dict[str, Any]:
     load_dotenv()
 

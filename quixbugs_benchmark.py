@@ -1,21 +1,10 @@
 """
-quixbugs_benchmark.py — External validation on QuixBugs Python dataset.
+Run external debugging validation on a QuixBugs subset.
 
-QuixBugs contains 40 classic algorithm implementations each with a single
-real bug. Ground-truth fixes are provided. This script runs a subset of 10
-tasks through the stem-agent debugging pipeline (base vs mutated blueprint)
-to validate that the 73% → 97% improvement seen on self-curated tasks holds
-on an independent dataset.
-
-The bugs are embedded directly so the benchmark runs without cloning the
-QuixBugs repo. Each entry is taken verbatim from:
-  https://github.com/jkoppel/QuixBugs
-
-Run:
-    python quixbugs_benchmark.py
-
-Requires OPENAI_API_KEY. Results saved to results/quixbugs_benchmark.json
-and results/quixbugs_benchmark.md.
+The benchmark embeds ten Python bugs from QuixBugs and compares a base
+single-shot blueprint against a mutated feedback-loop blueprint. Each agent is
+evaluated on its own proposed fix using pytest; the ground-truth fix is used
+only as reference data, not as model input.
 """
 
 import json
@@ -26,10 +15,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# ---------------------------------------------------------------------------
 # 10 QuixBugs Python tasks (buggy version + ground-truth fix)
-# ---------------------------------------------------------------------------
 # Source: https://github.com/jkoppel/QuixBugs (MIT licence)
 # Each entry: id, buggy code, correct code, description of the bug.
 
@@ -296,16 +282,11 @@ QUIXBUGS_TASKS = [
         """),
     },
 ]
-
-
-# ---------------------------------------------------------------------------
 # Benchmark runner
-# ---------------------------------------------------------------------------
-
 def _functional_match(agent_fix: str, ground_truth: str) -> bool:
     """
     Compare agent fix to ground truth by normalising whitespace.
-    Not a semantic check — a pass here means the agent produced the correct
+    Not a semantic check - a pass here means the agent produced the correct
     function body, not just something that compiles.
     """
     def normalise(code: str) -> str:
@@ -342,12 +323,12 @@ def run_quixbugs_benchmark() -> List[Dict[str, Any]]:
         buggy = task["buggy"]
         fixed = task["fixed"]
 
-        # Base blueprint — single-shot
+        # Base blueprint - single-shot
         base_result = runner.run(base_blueprint, buggy)
         base_fix = base_result.get("final_fix") or ""
         base_pytest_passed = base_result.get("final_pytest_passed", False)
 
-        # Mutated blueprint — with feedback loop
+        # Mutated blueprint - with feedback loop
         mutated_result = runner.run(mutated_blueprint, buggy)
         mutated_fix = mutated_result.get("final_fix") or ""
         mutated_pytest_passed = mutated_result.get("final_pytest_passed", False)
@@ -355,8 +336,8 @@ def run_quixbugs_benchmark() -> List[Dict[str, Any]]:
         first_attempt = mutated_result.get("first_attempt_passed", False)
 
         print(
-            f"  base={'✓' if base_pytest_passed else '✗'}"
-            f"  mutated={'✓' if mutated_pytest_passed else '✗'}"
+            f"  base={'yes' if base_pytest_passed else 'no'}"
+            f"  mutated={'yes' if mutated_pytest_passed else 'no'}"
             f"  rounds={rounds}"
         )
 
@@ -370,12 +351,7 @@ def run_quixbugs_benchmark() -> List[Dict[str, Any]]:
         })
 
     return results
-
-
-# ---------------------------------------------------------------------------
 # Reporting
-# ---------------------------------------------------------------------------
-
 def save_json(results: List[Dict[str, Any]], path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
@@ -398,7 +374,7 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
         f"|---|---|---|",
         f"| pytest pass rate | {base_pass}/{n} ({base_pass/n:.0%}) "
         f"| {mutated_pass}/{n} ({mutated_pass/n:.0%}) |",
-        f"| First-attempt pass rate | — | {first_pass}/{n} ({first_pass/n:.0%}) |",
+        f"| First-attempt pass rate | - | {first_pass}/{n} ({first_pass/n:.0%}) |",
         f"| Avg revision rounds | 0.00 | {avg_rounds:.2f} |",
         "",
         "| Task | Description | Base | Mutated | Rounds |",
@@ -406,8 +382,8 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
     ]
 
     for r in results:
-        base_mark = "✓" if r["base_pytest_passed"] else "✗"
-        mutated_mark = "✓" if r["mutated_pytest_passed"] else "✗"
+        base_mark = "yes" if r["base_pytest_passed"] else "no"
+        mutated_mark = "yes" if r["mutated_pytest_passed"] else "no"
         lines.append(
             f"| {r['task_id']} | {r['description']}"
             f" | {base_mark} | {mutated_mark} | {r['rounds_taken']} |"
@@ -455,8 +431,8 @@ def main() -> None:
     print("=" * 50)
     print(f"Base blueprint pass rate   : {base_pass}/{n} ({base_pass/n:.0%})")
     print(f"Mutated blueprint pass rate: {mutated_pass}/{n} ({mutated_pass/n:.0%})")
-    print("Saved → results/quixbugs_benchmark.json")
-    print("Saved → results/quixbugs_benchmark.md")
+    print("Saved -> results/quixbugs_benchmark.json")
+    print("Saved -> results/quixbugs_benchmark.md")
 
 
 if __name__ == "__main__":

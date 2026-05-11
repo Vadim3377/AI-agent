@@ -1,33 +1,14 @@
 """
-llm_agent_runner.py — LLM-backed agent runner with tool feedback loops.
+Execute selected blueprints with an OpenAI-backed runner.
 
-Tool feedback loop — debugging
---------------------------------
-After the initial fix attempt the runner calls pytest_runner on the suggested
-fix. If tests fail, the failure output is sent back and a revision is
-requested. Repeats for up to MAX_REVISION_ROUNDS.
+The runner supports single-shot execution and two active feedback loops:
+debugging, where generated fixes are checked with pytest and revised on
+failure, and documentation, where generated docstrings are checked for
+quality-aware coverage and revised when incomplete.
 
-Tool feedback loop — documentation
--------------------------------------
-After the initial documentation pass the runner calls the quality-aware
-docstring checker on the output code. A docstring is COMPLETE only if it
-contains an Args: section (for functions with parameters) and a Returns:
-section (for functions that return a value). If quality coverage is below
-MIN_DOCSTRING_COVERAGE, incomplete symbol names are sent back and a revision
-is requested. Repeats for up to MAX_DOC_REVISION_ROUNDS.
-
-Two important implementation details in the checker
-----------------------------------------------------
-1. Top-level traversal only: ast.walk visits the entire tree including nested
-   functions (closures like `target` inside `call_with_timeout`). These are
-   implementation details, not public API, and should not be counted.
-   The checker uses ast.iter_child_nodes at module and class level only,
-   which correctly excludes nested functions.
-
-2. Threshold is 0.90 (not 0.80): with 4-5 symbol modules, 4/5 = 0.80 exactly
-   meets a >= 0.80 threshold even when one symbol is incomplete. 0.90 ensures
-   the loop fires whenever any public symbol has an incomplete docstring in
-   modules of this size.
+Only blueprints containing active verification steps trigger these loops. This
+keeps base and mutated blueprint comparisons meaningful because both use the
+same model while differing in workflow structure.
 """
 
 import ast
@@ -48,12 +29,7 @@ load_dotenv()
 MAX_REVISION_ROUNDS = 3
 MAX_DOC_REVISION_ROUNDS = 2
 MIN_DOCSTRING_COVERAGE = 0.90   # requires all-but-one complete in 5-symbol modules
-
-
-# ---------------------------------------------------------------------------
 # Blueprint capability detection
-# ---------------------------------------------------------------------------
-
 _VERIFICATION_SIGNALS = [
     "verify_fix", "verify_against", "check_fix",
     "regression_risk", "rerun", "validate_fix",
@@ -73,13 +49,7 @@ def _blueprint_expects_verification(blueprint: AgentBlueprint) -> bool:
 def _blueprint_expects_doc_verification(blueprint: AgentBlueprint) -> bool:
     text = " ".join(blueprint.workflow).lower()
     return any(signal in text for signal in _DOC_VERIFICATION_SIGNALS)
-
-
-# ---------------------------------------------------------------------------
-# Quality-aware docstring checker
-# Shared by the runner loop and the benchmark — identical standard
-# ---------------------------------------------------------------------------
-
+# Quality-aware docstring checker used by the runner and benchmark
 def _has_args_section(doc: str) -> bool:
     return bool(re.search(r"(Args|Arguments|Parameters)\s*:", doc, re.IGNORECASE))
 
@@ -212,12 +182,7 @@ def _measure_docstring_coverage(code: str) -> Dict[str, Any]:
         "incomplete": incomplete,
         "success": True,
     }
-
-
-# ---------------------------------------------------------------------------
 # Code extraction helper
-# ---------------------------------------------------------------------------
-
 def _extract_python_code(raw: str) -> str:
     blocks = re.findall(r"```python\s*\n(.*?)```", raw, re.DOTALL)
     if blocks:
@@ -230,12 +195,7 @@ def _extract_python_code(raw: str) -> str:
         return raw.strip()
     except SyntaxError:
         return ""
-
-
-# ---------------------------------------------------------------------------
 # Main runner
-# ---------------------------------------------------------------------------
-
 class LLMAgentRunner:
     """
     Executes a selected AgentBlueprint using an OpenAI model with
@@ -258,11 +218,7 @@ class LLMAgentRunner:
             return self._run_documentation_loop(blueprint, task_input)
 
         return self._run_single_shot(blueprint, task_input)
-
-    # ------------------------------------------------------------------
-    # Single-shot
-    # ------------------------------------------------------------------
-
+    # Single-shot execution
     def _run_single_shot(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
         prompt = self._build_initial_prompt(blueprint, task_input)
         raw_text = self._call_llm(prompt)
@@ -282,11 +238,7 @@ class LLMAgentRunner:
             "first_attempt_passed": None,
             "final_pytest_passed": None,
         }
-
-    # ------------------------------------------------------------------
     # Debugging feedback loop
-    # ------------------------------------------------------------------
-
     def _run_debugging_loop(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
         history: List[Dict[str, str]] = []
         history.append({"role": "user", "content": self._build_initial_prompt(blueprint, task_input)})
@@ -360,11 +312,7 @@ class LLMAgentRunner:
             "final_pytest_passed": final_pytest_passed,
             "history_length": len(history),
         }
-
-    # ------------------------------------------------------------------
     # Documentation feedback loop
-    # ------------------------------------------------------------------
-
     def _run_documentation_loop(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
         """
         Multi-turn documentation loop using quality-aware coverage.
@@ -445,11 +393,7 @@ class LLMAgentRunner:
             "coverage_improved": (final_coverage or 0) > (initial_coverage or 0),
             "history_length": len(history),
         }
-
-    # ------------------------------------------------------------------
     # Prompt builders
-    # ------------------------------------------------------------------
-
     def _build_initial_prompt(self, blueprint: AgentBlueprint, task_input: str) -> str:
         schema_str = json.dumps(blueprint.output_schema, indent=2)
         tools_str = json.dumps(blueprint.tools, indent=2)
@@ -458,7 +402,7 @@ class LLMAgentRunner:
         if _blueprint_expects_verification(blueprint):
             verification_note = (
                 "\nThis blueprint includes verification steps. After producing your "
-                "initial fix, reason carefully about whether it would pass tests — "
+                "initial fix, reason carefully about whether it would pass tests - "
                 "check for off-by-one errors, missing returns, wrong operators, and "
                 "edge cases before finalising your answer.\n"
             )
@@ -547,11 +491,7 @@ class LLMAgentRunner:
             if any(kw in line for kw in ["FAILED", "AssertionError", "assert", "Error", "def test_"])
         ]
         return "\n".join(useful[:20]) if useful else raw_pytest_output[:400]
-
-    # ------------------------------------------------------------------
     # LLM helpers
-    # ------------------------------------------------------------------
-
     def _call_llm(self, prompt: str) -> str:
         response = self.client.responses.create(model=self.model, input=prompt)
         return response.output_text
@@ -559,11 +499,7 @@ class LLMAgentRunner:
     def _call_llm_with_history(self, history: List[Dict[str, str]]) -> str:
         response = self.client.responses.create(model=self.model, input=history)
         return response.output_text
-
-    # ------------------------------------------------------------------
     # Fix extraction (debugging)
-    # ------------------------------------------------------------------
-
     def _extract_fix(self, parsed: Optional[Dict], raw_text: str) -> Optional[str]:
         if parsed and isinstance(parsed, dict):
             for key in (
@@ -585,11 +521,7 @@ class LLMAgentRunner:
                 inner = inner[:-1]
             code = "\n".join(inner).strip()
         return code
-
-    # ------------------------------------------------------------------
     # JSON parsing
-    # ------------------------------------------------------------------
-
     def _try_parse_json(self, raw_text: str) -> Any:
         try:
             return json.loads(raw_text)
