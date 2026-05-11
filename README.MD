@@ -1,6 +1,9 @@
 # Stem Agent
 
-A minimal stem-agent pipeline inspired by biological stem-cell differentiation. Instead of hand-building a fixed agent for one task, the system starts from a broad task-family prompt, grows a specialist blueprint through multi-round evolution with real tool feedback, and executes the selected specialist.
+A minimal stem-agent pipeline inspired by biological stem-cell differentiation. Instead of
+hand-building a fixed agent for one task, the system starts from a broad task-family prompt,
+grows a specialist blueprint through multi-round evolution with real tool feedback, and executes
+the selected specialist.
 
 ---
 
@@ -20,7 +23,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Then run the pipeline:
+Then run the full pipeline:
 
 ```bash
 python main.py --task "Debug this Python function." --evaluate --input "def add(a, b): return a - b" --output configs/selected_debugging.json
@@ -31,7 +34,8 @@ python main.py --task "Debug this Python function." --evaluate --input "def add(
 ## Requirements
 
 - Python 3.10 or later
-- An OpenAI API key for the LLM-backed runner and task benchmark (the deterministic pipeline runs without one)
+- An OpenAI API key for the LLM classifier, LLM-backed runner, and task benchmarks.
+  The deterministic pipeline runs without one (keyword fallback classifier is used automatically).
 
 `requirements.txt`:
 
@@ -52,7 +56,9 @@ Create a `.env` file in the project root:
 OPENAI_API_KEY=your_api_key_here
 ```
 
-The deterministic pipeline, benchmark demo, and Streamlit frontend all work without an API key. Only `--use-llm` and `task_benchmark.py` (LLM mode) require one.
+Without an API key: the keyword fallback classifier is used, the deterministic runner works
+fully, and `benchmark_demo.py` runs end-to-end. Only `--use-llm`, `quixbugs_benchmark.py`,
+and `doc_benchmark.py` require an API key.
 
 Your `.gitignore` should include:
 
@@ -75,9 +81,14 @@ env/
 
 ## Project Idea
 
-A stem agent starts from a general shell and gradually forms a specialised agent design based on the task description. Specialisation is represented as an explicit `AgentBlueprint` — role, workflow, tools, output schema, stopping conditions — rather than uncontrolled self-modifying code.
+A stem agent starts from a general shell and gradually forms a specialised agent design based
+on the task description. Specialisation is represented as an explicit `AgentBlueprint` -- role,
+workflow, tools, output schema, stopping conditions -- rather than uncontrolled self-modifying code.
 
-The central question: **does a better blueprint actually produce a better agent?** The answer is yes, but the mechanism matters. Blueprint structure alone does not improve fix quality. What matters is whether the blueprint's architecture enables a real tool feedback loop. The mutated blueprint does; the base blueprint does not.
+The central question: does a better blueprint actually produce a better agent? The answer is yes,
+but the mechanism matters. Blueprint structure alone does not improve output quality. What matters
+is whether the blueprint's architecture enables a real tool feedback loop. The mutated blueprint
+does; the base blueprint does not.
 
 ---
 
@@ -85,22 +96,30 @@ The central question: **does a better blueprint actually produce a better agent?
 
 ```
 Task Prompt
-   ↓
-DomainClassifier       — keyword signal routing → domain / subdomain
-   ↓
-DomainProfiler         — expands to capabilities, tools, metrics
-   ↓
-ArchitectureGenerator  — produces initial AgentBlueprint (JSON)
-   ↓
-MutationLoop           — multi-round: mutate → evaluate → keep best → repeat
-   ↓
+   |
+   v
+DomainClassifier       -- LLM reads prompt semantically -> domain / subdomain / reasoning
+   |                      (keyword fallback used automatically if no API key)
+   v
+DomainProfiler         -- expands to capabilities, tools, metrics
+   |
+   v
+ArchitectureGenerator  -- produces initial AgentBlueprint (JSON)
+   |
+   v
+MutationLoop           -- multi-round: mutate -> evaluate -> keep best -> repeat
+   |
+   v
 Selected AgentBlueprint
-   ↓
-AgentRunner            — deterministic runner with real tool dispatch
-   ↓    pytest_runner / static_checker / secret_detector / ...
-ToolResults            — feed back into BlueprintEvaluator (task-level score)
-   ↓
-BlueprintEvaluator     — structural (40%) + task-level (60%) combined score
+   |
+   v
+AgentRunner            -- deterministic runner with real tool dispatch
+   |    pytest_runner / static_checker / secret_detector / docstring_checker / ...
+   v
+ToolResults            -- feed back into BlueprintEvaluator (task-level score)
+   |
+   v
+BlueprintEvaluator     -- structural (40%) + task-level (60%) combined score
 ```
 
 ---
@@ -117,17 +136,17 @@ python -m venv .venv
 
 ### 2. Activate
 
-**Windows (PowerShell):**
+Windows (PowerShell):
 ```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-**Windows (cmd):**
+Windows (cmd):
 ```cmd
 .venv\Scripts\activate.bat
 ```
 
-**macOS / Linux:**
+macOS / Linux:
 ```bash
 source .venv/bin/activate
 ```
@@ -138,7 +157,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Set up API key (optional)
+### 4. Set up API key (optional for deterministic path)
 
 ```
 OPENAI_API_KEY=your_api_key_here   # in .env file in project root
@@ -165,55 +184,59 @@ python main.py --task "Debug this Python function." --evaluate --output configs/
 Providing `--input` enables tool-based task-level scoring during evolution:
 
 ```bash
-python main.py --task "Debug this Python function." --evaluate --input "def add(a, b): return a - b" --output configs/selected_debugging.json
+python main.py --task "Debug this Python function." --evaluate \
+  --input "def add(a, b): return a - b" \
+  --output configs/selected_debugging.json
 ```
 
 Example output:
 
 ```
-Stem shell completed multi-round evolution.
-Domain:    quality_assurance / debugging
-Blueprint: debugging_specialist_agent__mutated_debugging_verification
-Best score: 1.00
-Rounds run: 2
-Stopping reason: score_plateau
+Domain:     quality_assurance / debugging
+Classifier: LLM (semantic)
+LLM reasoning: The task involves debugging a function with wrong output and a failing test.
 
-Rnd  Blueprint                                             Struct   Task   Comb  Best
--------------------------------------------------------------------------------------
-0    debugging_specialist_agent                              0.86   1.00   0.94
-1    debugging_specialist_agent__mutated_debugging_ver...    1.00   1.00   1.00  OK
-2    debugging_specialist_agent__mutated_debugging_ver...    1.00   1.00   1.00  OK
--------------------------------------------------------------------------------------
-Stopping reason: score_plateau
+Base score: 0.86
+Mutated score: 1.00
+Selected blueprint: mutated
+Blueprint name: debugging_specialist_agent__mutated_debugging_verification
 Saved to: configs/selected_debugging.json
 ```
 
-### Execute a saved blueprint — deterministic runner (no API key needed)
+### Execute a saved blueprint -- deterministic runner (no API key needed)
 
 ```bash
-python main.py --run-blueprint configs/selected_debugging.json --input "def add(a, b): return a - b" --run-output results/debugging_run.json
+python main.py --run-blueprint configs/selected_debugging.json \
+  --input "def add(a, b): return a - b" \
+  --run-output results/debugging_run.json
 ```
 
-Calls real tools (pytest, static analysis) and produces a structured JSON trace. Proves the workflow is runnable. Does not perform semantic reasoning.
+Calls real tools (pytest, static analysis) and produces a structured JSON trace. Proves the
+workflow is runnable without performing semantic reasoning.
 
-### Execute a saved blueprint — LLM runner (requires API key)
+### Execute a saved blueprint -- LLM runner (requires API key)
 
 ```bash
-python main.py --run-blueprint configs/selected_debugging.json --input "def add(a, b): return a - b" --use-llm --run-output results/debugging_llm_run.json
+python main.py --run-blueprint configs/selected_debugging.json \
+  --input "def add(a, b): return a - b" \
+  --use-llm \
+  --run-output results/debugging_llm_run.json
 ```
 
-For debugging blueprints with active verification steps, automatically runs the tool feedback loop: generate fix → run pytest → observe failure → revise → repeat (up to 3 rounds).
+For debugging blueprints with active verification steps, automatically runs the tool feedback
+loop: generate fix -> run pytest -> observe failure -> revise -> repeat (up to 3 rounds).
+
+For documentation blueprints with `verify_docstring_coverage`, runs the docstring quality
+feedback loop: document code -> measure Args:/Returns: coverage -> revise if below 90% ->
+repeat (up to 2 rounds).
 
 ### Specify a different model
 
 ```bash
-python main.py --run-blueprint configs/selected_debugging.json --input "def add(a, b): return a - b" --use-llm --model gpt-4o --run-output results/run_gpt4o.json
-```
-
-### Control evolution rounds
-
-```bash
-python main.py --task "Debug this Python function." --evaluate --input "def add(a, b): return a - b" --max-rounds 6 --output configs/selected_debugging.json
+python main.py --run-blueprint configs/selected_debugging.json \
+  --input "def add(a, b): return a - b" \
+  --use-llm --model gpt-4o \
+  --run-output results/run_gpt4o.json
 ```
 
 ### All CLI flags
@@ -224,7 +247,6 @@ python main.py --task "Debug this Python function." --evaluate --input "def add(
 --mutate               Apply a single mutation without full evaluation
 --evaluate             Run multi-round evolution and select the best blueprint
 --input TEXT           Concrete code or text for tool-based evaluation and runner execution
---max-rounds INT       Maximum mutation rounds when --evaluate is set (default: 4)
 --run-blueprint PATH   Execute an existing saved blueprint
 --run-output PATH      Where to save the runner output JSON
 --use-llm              Use the LLM-backed runner instead of the deterministic runner
@@ -239,31 +261,25 @@ python main.py --task "Debug this Python function." --evaluate --input "def add(
 streamlit run app.py
 ```
 
-Opens an interactive web UI at `http://localhost:8501`. Lets you choose a task category or enter a custom prompt, provide code as task input, run the full multi-round evolution pipeline, inspect the evolution table, and execute the selected blueprint with either the deterministic or LLM runner. Shows revision rounds taken and first-attempt vs final pytest result.
+The frontend shows:
+- Classification method (LLM or keyword) and the LLM's one-sentence reasoning
+- Whether the LLM and keyword classifiers agreed on routing
+- Evolution table with structural and task-level scores per round
+- Base vs selected blueprint comparison
+- Runner output with tool results and feedback loop metrics
 
 ---
 
 ## Benchmarks
 
-### Pipeline benchmark (all task categories)
+### Pipeline structural benchmark (no API key needed)
 
 ```bash
 python benchmark_demo.py
 ```
 
-Runs the full `MutationLoop` pipeline across all five task categories with real code inputs. For each task: grows base blueprint, runs multi-round evolution with real tool feedback, selects best blueprint, executes with deterministic runner.
-
-Sample output:
-
-```
-Task                           Base   Best  Rounds Tools
-------------------------------------------------------------------------
-debugging                      0.94   1.00       2   static_checker, pytest_runner
-code_quality_cleanup           0.76   0.76       1   complexity_checker
-comments_and_documentation     0.34   0.40       2   docstring_checker, complexity_checker
-security                       0.88   0.88       1   secret_detector
-code_research                  0.86   1.00       2   --
-```
+Runs the full pipeline across all five task categories. Reports classification method and
+LLM reasoning per task, blueprint scores, and whether LLM and keyword routing agreed.
 
 Generated files:
 ```
@@ -272,24 +288,25 @@ results/benchmark_summary.md
 results/selected_blueprints/<task>_selected_blueprint.json
 ```
 
-### Task-level agent benchmark (requires API key)
+### Debugging task-level benchmark (requires API key)
 
 ```bash
 python task_benchmark.py
 ```
 
-Feeds buggy code to the agent, extracts the suggested fix from the LLM output, and runs pytest on the agent's own fix — not the ground-truth. Tests whether the mutation loop produces a specialist that actually fixes bugs better.
+Runs both base and mutated blueprints against 30 hand-curated Python functions across six
+bug categories. Extracts the agent's suggested fix and runs pytest on it -- not the
+ground-truth. Tests whether blueprint mutation produces a specialist that actually fixes bugs.
 
 Sample output:
-
 ```
-Metric                               Base  Selected   delta
--------------------------------------------------------------
-Fix extracted rate                   100%      100%
-First-attempt pass rate               73%       70%   -3%
-Final pytest pass rate                73%       97%  +24%
-Avg revision rounds taken            0.00      0.43  +0.43
-Avg agent score                     0.813     0.977  +0.164
+Metric                          Base   Selected   delta
+-------------------------------------------------------
+Fix extracted rate              100%      100%
+First-attempt pass rate          73%       70%    -3%
+Final pytest pass rate           73%       97%   +24%
+Avg revision rounds             0.00      0.43  +0.43
+Avg agent score                0.813     0.977  +0.164
 ```
 
 Generated files:
@@ -298,21 +315,51 @@ results/task_benchmark.json
 results/task_benchmark.md
 ```
 
-**Static-only mode (no API key):**
+### QuixBugs external validation (requires API key)
 
 ```bash
-python task_benchmark.py --no-llm
+python quixbugs_benchmark.py
 ```
 
-Runs static analysis only — no LLM fix generation. Useful for verifying the harness without API calls.
+Validates the debugging agent on 10 real Python bugs from the QuixBugs dataset -- an
+independent external benchmark not seen during development. Runs base and mutated blueprints
+on each bug and reports pytest pass rates.
 
-**Debug a single case:**
+Sample output:
+```
+Base blueprint pass rate   : 0/10 (0%)
+Mutated blueprint pass rate: 7/10 (70%)
+```
+
+Generated files:
+```
+results/quixbugs_benchmark.json
+results/quixbugs_benchmark.md
+```
+
+### Documentation feedback loop benchmark (requires API key)
 
 ```bash
-python task_benchmark.py --debug-case op_001
+python doc_benchmark.py
 ```
 
-Prints the full raw LLM output, extracted fix, and pytest result for one case.
+Runs base (single-shot) and mutated (verify_docstring_coverage feedback loop) blueprints
+against 10 multi-function Python modules. Uses quality-aware scoring: a docstring counts
+as complete only if it has Args: and Returns: sections where required -- one-liner docstrings
+score zero.
+
+Sample output:
+```
+Base blueprint avg quality coverage   : 96%
+Mutated blueprint avg quality coverage: 100%
+Improved in                           : 2/10 tasks
+```
+
+Generated files:
+```
+results/doc_benchmark.json
+results/doc_benchmark.md
+```
 
 ---
 
@@ -346,13 +393,15 @@ secret_detector findings: 1
 docstring_checker coverage: 0.5
 ```
 
-### Verify the full pipeline
+### Verify the full pipeline (no API key needed)
 
 ```bash
-python main.py --task "Debug this Python function." --evaluate --input "def add(a, b): return a - b" --output configs/test_run.json
+python main.py --task "Debug this Python function." --evaluate \
+  --input "def add(a, b): return a - b" \
+  --output configs/test_run.json
 ```
 
-Expected: evolution table printed, `configs/test_run.json` created.
+Expected: classifier method and reasoning printed, evolution table shown, `configs/test_run.json` created.
 
 ### Verify the benchmark runs (no API key needed)
 
@@ -360,31 +409,18 @@ Expected: evolution table printed, `configs/test_run.json` created.
 python benchmark_demo.py
 ```
 
-Expected: table of 5 tasks printed, files created in `results/`.
-
-### Verify the task benchmark in static mode (no API key needed)
-
-```bash
-python task_benchmark.py --no-llm
-```
-
-Expected: signal scores printed, `results/task_benchmark.json` created.
+Expected: 5-task classification comparison table printed, files created in `results/`.
 
 ### Verify the deterministic runner with real tools
 
 ```bash
-python main.py --run-blueprint configs/test_run.json --input "def add(a, b): return a - b" --run-output results/test_result.json
+python main.py --run-blueprint configs/test_run.json \
+  --input "def add(a, b): return a - b" \
+  --run-output results/test_result.json
 ```
 
-Expected: `results/test_result.json` created with `tools_called` listing `static_checker` and `pytest_runner`.
-
-### Verify the LLM runner on a single debug case (requires API key)
-
-```bash
-python task_benchmark.py --debug-case op_001
-```
-
-Expected: raw LLM output shown, extracted fix is `def add(a, b):\n    return a + b`, pytest result is `success = True`.
+Expected: `results/test_result.json` created with `tools_called` listing `static_checker`
+and `pytest_runner`.
 
 ---
 
@@ -392,74 +428,118 @@ Expected: raw LLM output shown, extracted fix is `def add(a, b):\n    return a +
 
 ### `DomainClassifier`
 
-Normalises the task prompt and assigns it to a domain and subdomain via keyword signals.
+When an API key is available, sends the raw task prompt to the LLM and asks it to propose
+domain, subdomain, intent, confidence, and a one-sentence reasoning field as structured JSON.
+The LLM reads the environment semantically rather than matching against keyword lists.
+
+A keyword fallback is used automatically when no API key is set. The `classification_method`
+field on the result records which path ran (`llm` | `keyword` | `fallback`).
 
 Supported categories:
-- **QA: debugging** — bugs, errors, failing tests, wrong output
-- **QA: code-quality cleanup** — dead code, redundancy, readability, refactoring
-- **QA: comments and documentation** — docstrings, inline comments, explanations
-- **Security: dangerous operations and data breaches** — API keys, eval, PII, secrets
-- **Deep research: code-related research** — documentation, examples, implementation approaches
+- QA: debugging
+- QA: code-quality cleanup
+- QA: comments and documentation
+- Security: dangerous operations and data breaches
+- Deep research: code-related research
 
 ### `DomainProfiler`
 
-Expands the classification into a full domain profile: artefact type, required capabilities, candidate tools, evaluation metrics, and reasoning.
+Expands the classification into a full domain profile: artifact type, required capabilities,
+candidate tools, evaluation metrics, and reasoning. Preserves `classification_method` and
+`llm_reasoning` from the classifier into the `DomainProfile` so callers don't need to
+re-classify to find out how routing happened.
 
 ### `ArchitectureGenerator`
 
-Converts a domain profile into an initial specialist blueprint with a domain-appropriate workflow, tool list, output schema, and stopping conditions.
+Converts a domain profile into an initial specialist blueprint with a domain-appropriate
+workflow, tool list, output schema, and stopping conditions.
 
 ### `MutationLoop`
 
-Multi-round evolution loop. Runs up to `max_rounds` (default 4), stopping when combined score improvement falls below 3%. Uses real tool results for task-level scoring when `task_input` is provided.
+Multi-round evolution loop. Runs up to `max_rounds` (default 4), stopping when combined
+score improvement falls below 3%. Uses real tool results for task-level scoring when
+`task_input` is provided.
 
 ### `BlueprintEvaluator`
 
 Two-layer scoring:
 
-| Layer | Weight | What it measures |
-|-------|--------|-----------------|
-| Structural | 40% | Workflow length, tools, schema, stopping conditions, safeguard steps, subdomain alignment |
-| Task-level | 60% | Real tool output: pytest pass rate, static issues, docstring coverage, secret findings |
+```
+Layer        Weight   What it measures
+------       ------   ----------------
+Structural    40%     Workflow length, tools, schema, stopping conditions,
+                      safeguard steps, subdomain alignment
+Task-level    60%     Real tool output: pytest pass rate, static issues,
+                      docstring coverage, secret findings
+```
 
-Combined score = `0.4 × structural + 0.6 × task_level`.
+Combined score = 0.4 * structural + 0.6 * task_level.
 
-### `tools.py` — Real Executable Tools
+### `tools.py` -- Real Executable Tools
 
-| Tool | Triggered by step keyword | What it does |
-|------|--------------------------|-------------|
-| `pytest_runner` | `run_tests`, `verify_fix` | Name-inferred assertions, subprocess pytest |
-| `static_checker` | `identify_failure`, `localise_bug` | AST: suspicious operators, missing returns, unreachable code |
-| `complexity_checker` | `complexity`, `dead_code` | Cyclomatic complexity via AST |
-| `secret_detector` | `secret`, `pii`, `dangerous` | Regex scan for API keys, tokens, passwords |
-| `docstring_checker` | `docstring`, `documentation` | AST docstring coverage |
+```
+Tool                Triggered by step keyword       What it does
+----                -------------------------       ------------
+pytest_runner       run_tests, verify_fix           Name-inferred assertions, subprocess pytest
+static_checker      identify_failure, localise_bug  AST: suspicious operators, missing returns
+complexity_checker  complexity, dead_code           Cyclomatic complexity via AST
+secret_detector     secret, pii, dangerous          Regex scan for API keys, tokens, passwords
+docstring_checker   docstring, documentation        AST docstring coverage (presence-based)
+```
 
 ### `AgentRunner`
 
-Deterministic runner. For each workflow step, checks for a matching tool, calls it if not yet called this run, records the result. Falls back to a descriptive placeholder if no tool matches. Tool results enrich the output schema where applicable.
+Deterministic runner. For each workflow step, checks for a matching tool, calls it if not
+yet called this run, records the result. Falls back to a descriptive placeholder if no tool
+matches. Tool results enrich the output schema where applicable.
 
 ### `LLMAgentRunner`
 
-Semantic execution using OpenAI. For debugging blueprints with active verification steps (`verify_fix_against_generated_tests`), runs a tool feedback loop:
+Semantic execution using OpenAI. Implements tool feedback loops for two domains.
 
+Debugging loop (up to 3 rounds):
+```
 1. LLM produces initial fix
-2. `pytest_runner` evaluates it
+2. pytest_runner evaluates it
 3. If failed: failure output sent back as a new conversation turn
 4. LLM revises using the test evidence
-5. Repeat up to 3 rounds
+5. Repeat until pytest passes or rounds exhausted
+```
 
-The base blueprint's `run_tests_if_available` is **passive** and does not trigger the loop. The mutated blueprint's `verify_fix_against_generated_tests` is **active** and does. This is the mechanism behind the +24% benchmark improvement.
+Documentation loop (up to 2 rounds):
+```
+1. LLM adds Google-style docstrings
+2. Quality-aware AST checker measures coverage
+   (complete = has Args: + Returns: sections where required)
+3. If quality coverage below 90%: incomplete symbol names sent back
+4. LLM adds missing sections
+5. Repeat until coverage >= 90% or rounds exhausted
+```
+
+The base blueprint's passive steps (`run_tests_if_available`) do not trigger the loops.
+The mutated blueprint's active steps (`verify_fix_against_generated_tests`,
+`verify_docstring_coverage`) do. This is the mechanism behind the benchmark improvements.
+
+### `StemShell`
+
+Coordinator. `grow_initial_blueprint` and `grow_and_evaluate` are the two main entry points.
+`grow_and_evaluate` returns an `EvaluationComparison` dataclass with named fields
+(`selected_blueprint`, `base_result`, `mutated_result`, `selected`) rather than a bare tuple.
 
 ---
 
 ## Benchmark Results Summary
 
-| Benchmark | Before | After |
-|-----------|:------:|:-----:|
-| Blueprint structural score | 0.86 | 1.00 |
-| Deterministic vs LLM runner | 0.60 | 0.95 |
-| 30-task final pytest pass rate | 73% | 97% |
-| 30-task avg agent score | 0.813 | 0.977 |
+```
+Benchmark                               Before    After
+-------                                 ------    -----
+Blueprint structural score               0.86     1.00
+Deterministic vs LLM runner              0.60     0.95
+30-task final pytest pass rate           73%      97%
+30-task avg agent score                 0.813    0.977
+QuixBugs external pass rate (mutated)    --       50-70%
+Doc quality coverage (mutated)           --       100%
+```
 
 ---
 
@@ -467,35 +547,55 @@ The base blueprint's `run_tests_if_available` is **passive** and does not trigge
 
 ```
 .
-├── main.py                    # CLI entry point
-├── app.py                     # Streamlit frontend
-├── benchmark_demo.py          # Pipeline benchmark (all 5 task categories)
-├── task_benchmark.py          # Task-level agent benchmark (30 bug cases)
-├── models.py                  # AgentBlueprint, DomainProfile, EvaluationResult
-├── domain_classifier.py       # Keyword-based task classifier
-├── domain_profiler.py         # Domain profile expander
-├── architecture_generator.py  # Blueprint generator
-├── blueprint_mutator.py       # Single-step blueprint mutator
-├── mutation_loop.py           # Multi-round evolution loop
-├── blueprint_evaluator.py     # Two-layer evaluator (structural + task-level)
-├── agent_runner.py            # Deterministic runner with real tool dispatch
-├── tools.py                   # Real executable tools
-├── llm_agent_runner.py        # LLM-backed runner with tool feedback loop
-├── stem_shell.py              # Coordinator: grow_initial_blueprint, grow_and_evaluate
-├── requirements.txt
-├── .env                       # Not committed — add OPENAI_API_KEY here
-├── configs/                   # Saved blueprint JSONs (git-ignored)
-└── results/                   # Benchmark outputs and run results (git-ignored)
+|-- main.py                    CLI entry point
+|-- app.py                     Streamlit frontend
+|-- benchmark_demo.py          Pipeline benchmark (all 5 task categories, classifier comparison)
+|-- task_benchmark.py          Debugging task-level benchmark (30 self-curated bug cases)
+|-- quixbugs_benchmark.py      External validation on 10 real QuixBugs Python bugs
+|-- doc_benchmark.py           Documentation feedback loop benchmark (quality-aware coverage)
+|-- models.py                  AgentBlueprint, DomainProfile, EvaluationResult, EvaluationComparison
+|-- domain_classifier.py       LLM-powered semantic classifier with keyword fallback
+|-- domain_profiler.py         Domain profile expander (preserves classification metadata)
+|-- architecture_generator.py  Blueprint generator
+|-- blueprint_mutator.py       Controlled blueprint mutator
+|-- mutation_loop.py           Multi-round evolution loop
+|-- blueprint_evaluator.py     Two-layer evaluator (structural + task-level)
+|-- agent_runner.py            Deterministic runner with real tool dispatch
+|-- tools.py                   Real executable tools (pytest, AST, regex)
+|-- llm_agent_runner.py        LLM-backed runner with feedback loops (debugging + documentation)
+|-- stem_shell.py              Coordinator: grow_initial_blueprint, grow_and_evaluate
+|-- requirements.txt
+|-- .env                       Not committed -- add OPENAI_API_KEY here
+|-- configs/                   Saved blueprint JSONs (git-ignored)
+`-- results/                   Benchmark outputs and run results (git-ignored)
 ```
 
 ---
 
 ## Design Choices
 
-**Deterministic pipeline, LLM only at execution.** Classification, profiling, architecture generation, mutation, and evaluation are all deterministic and inspectable. The LLM is used only inside `LLMAgentRunner`. This keeps the differentiation process reproducible and debuggable.
+**LLM classifier with deterministic fallback.** The classifier sends the raw task prompt
+to the LLM and reads the environment semantically. The keyword fallback ensures the pipeline
+is fully runnable without an API key. Both paths produce a `ClassificationResult` with a
+`classification_method` field so callers can see which path ran.
 
-**Tools integrated into the runner, not a separate pipeline.** Tools are called inside `AgentRunner` during step execution, triggered by step name keywords. Their results flow directly into the evaluator's task-level score.
+**Deterministic pipeline, LLM only at execution.** Classification uses the LLM but the
+result is then passed into a deterministic profiler, generator, mutator, and evaluator.
+The LLM is used for semantic reasoning only inside `LLMAgentRunner`. This keeps the
+differentiation process reproducible and inspectable.
 
-**Mutation can lose.** The `MutationLoop` stops when improvement falls below 3%. The base blueprint is kept when it already scores well on real tool output.
+**Active vs passive workflow steps.** Whether a blueprint triggers a tool feedback loop
+depends on its workflow steps. Passive steps (`run_tests_if_available`) describe intent.
+Active steps (`verify_fix_against_generated_tests`, `verify_docstring_coverage`) trigger
+real tool calls and multi-turn revision. Only mutation adds active steps.
 
-**Failures are reported, not hidden.** The task benchmark reports cases where the agent fix still fails pytest. Type/scope bugs reach 80% final pass rate — not 100%. This is documented rather than excluded.
+**Tools integrated into the runner, not a separate pipeline.** Tools are called inside
+`AgentRunner` during step execution, triggered by step name keywords. Their results flow
+directly into the evaluator's task-level score.
+
+**Mutation can lose.** The `MutationLoop` stops when improvement falls below 3%. The base
+blueprint is kept when it already scores well on real tool output.
+
+**Failures are reported, not hidden.** The task benchmark reports cases where the agent fix
+still fails pytest. Type/scope bugs reach 80% final pass rate -- not 100%. Three QuixBugs
+tasks hit MAX_REVISION_ROUNDS without passing. These are documented rather than excluded.
