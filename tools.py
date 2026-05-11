@@ -36,12 +36,96 @@ class ToolResult:
 # Tool: pytest_runner
 # ---------------------------------------------------------------------------
 
+def _infer_expected(fn_name: str, args: tuple) -> Optional[Any]:
+    """
+    Infer the expected return value for a function call from its name and args.
+    Returns None if no inference is possible — caller falls back to not-None check.
+
+    Covers the most common patterns in the benchmark dataset:
+      add/sum/plus/total  → sum of args
+      subtract/diff/minus → args[0] - args[1]
+      multiply/product    → product of args
+      double              → args[0] * 2
+      square              → args[0] ** 2
+      negate              → -args[0]
+      plus_one / increment → args[0] + 1
+      is_even             → args[0] % 2 == 0
+      is_zero             → args[0] == 0
+      absolute            → abs(args[0])
+      maximum / max_val   → max(args)
+      average             → sum(args) / len(args)
+      factorial           → math.factorial(args[0]) for small n
+      count_up_to         → list(range(1, args[0]+1))
+      repeat(s, n)        → skipped (string arg)
+      is_adult            → args[0] >= 18
+    """
+    import math
+    name = fn_name.lower()
+
+    try:
+        if not args:
+            return None
+
+        a = args[0]
+        # Skip if any arg is not a number
+        if not all(isinstance(x, (int, float)) for x in args):
+            return None
+
+        if any(kw in name for kw in ["add", "sum_pair", "sum_all", "total_sum", "total", "plus"]) and "plus_one" not in name:
+            return sum(args)
+        if "plus_one" in name or "increment" in name:
+            return a + 1
+        if "subtract" in name or "diff" in name or "minus" in name:
+            return args[0] - args[1] if len(args) >= 2 else None
+        if "multiply" in name or "product" in name:
+            result = 1
+            for x in args: result *= x
+            return result
+        if "double" in name:
+            return a * 2
+        if "square" in name:
+            return a ** 2
+        if "negate" in name:
+            return -a
+        if "is_even" in name:
+            return a % 2 == 0
+        if "is_zero" in name:
+            return a == 0
+        if "absolute" in name or name == "abs_val":
+            return abs(a)
+        if "maximum" in name or name == "max_val":
+            return max(args)
+        if "average" in name or "mean" in name:
+            return sum(args) / len(args) if args else None
+        if "factorial" in name and 0 <= a <= 10:
+            return math.factorial(int(a))
+        if "count_up_to" in name:
+            return list(range(1, int(a) + 1))
+        if "is_adult" in name:
+            return a >= 18
+        if "is_positive" in name:
+            return a > 0
+        if "is_even" in name:
+            return a % 2 == 0
+        if any(kw in name for kw in ["sum_all", "sum_pair"]):
+            return sum(args)
+    except Exception:
+        pass
+
+    return None
+
+
 def pytest_runner(task_input: str) -> ToolResult:
     """
-    Writes the provided code to a temp file, generates integer smoke tests for
-    every top-level function, and runs pytest. If the code contains a comment
-    of the form  # expected(a, b): value  it generates an assertion for that
-    call too.
+    Writes the provided code to a temp file, generates tests for every
+    top-level function, and runs pytest.
+
+    Test generation strategy (in priority order):
+    1. If the code has  # expected(a, b): value  comments, use those assertions.
+    2. If the function name implies a known mathematical operation, infer the
+       expected output and generate a value-equality assertion.
+    3. Otherwise, assert the return value is not None — catches missing-return
+       bugs without requiring knowledge of the correct output.
 
     Returns pass/fail and counts of passed/failed tests.
     """
@@ -72,51 +156,67 @@ def pytest_runner(task_input: str) -> ToolResult:
     if n_args == 0:
         arg_sets = [()]
     elif n_args == 1:
-        arg_sets = [(0,), (1,), (-1,)]
+        arg_sets = [(2,), (3,), (-1,), (0,)]
     elif n_args == 2:
-        arg_sets = [(1, 2), (0, 0), (-1, 1), (3, 5)]
+        arg_sets = [(3, 5), (1, 2), (0, 0), (-1, 1)]
     elif n_args == 3:
-        arg_sets = [(1, 2, 3), (0, 0, 0)]
+        arg_sets = [(1, 2, 3), (2, 3, 4)]
     else:
-        arg_sets = [tuple(range(n_args))]
+        arg_sets = [tuple(range(1, n_args + 1))]
 
     # Parse expected-output hints from comments
-    expected: Dict[str, Any] = {}
+    explicit: Dict[str, Any] = {}
     for line in task_input.splitlines():
         m = re.search(r"#\s*expected(?:\(([^)]+)\))?:\s*(.+)", line)
         if m:
             try:
                 key = str(eval(f"({m.group(1)},)") if m.group(1) else "()")
-                expected[key] = eval(m.group(2).strip())
+                explicit[key] = eval(m.group(2).strip())
             except Exception:
                 pass
 
-    lines = [task_input, "", "import pytest", ""]
+    lines = [task_input, "", "import pytest", "import math", ""]
     for args in arg_sets:
-        safe = repr(args).replace(", ", "_").replace("-", "neg").replace("(", "").replace(")", "")
+        safe = "_".join(
+            str(a).replace("-", "neg").replace(".", "p") for a in args
+        ) or "noargs"
         call = ", ".join(repr(a) for a in args)
         key = str(args)
-        if key in expected:
+
+        if key in explicit:
+            # Priority 1: explicit comment hint
             lines += [
                 f"def test_{fn_name}_{safe}():",
-                f"    assert {fn_name}({call}) == {repr(expected[key])}",
+                f"    assert {fn_name}({call}) == {repr(explicit[key])}",
                 "",
             ]
         else:
-            lines += [
-                f"def test_{fn_name}_smoke_{safe}():",
-                f"    result = {fn_name}({call})",
-                f"    assert result is not None or result == 0 or True",
-                "",
-            ]
+            inferred = _infer_expected(fn_name, args)
+            if inferred is not None:
+                # Priority 2: inferred from function name
+                lines += [
+                    f"def test_{fn_name}_{safe}():",
+                    f"    assert {fn_name}({call}) == {repr(inferred)}",
+                    "",
+                ]
+            else:
+                # Priority 3: at minimum, assert not None (catches missing-return bugs)
+                lines += [
+                    f"def test_{fn_name}_{safe}_not_none():",
+                    f"    result = {fn_name}({call})",
+                    f"    assert result is not None, f'Expected a return value, got None'",
+                    "",
+                ]
 
-    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+    import os as _os
+    fd, tmp = tempfile.mkstemp(suffix=".py", prefix="stemtest_")
+    with _os.fdopen(fd, "w") as f:
         f.write("\n".join(lines))
-        tmp = f.name
 
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", tmp, "-v", "--tb=short", "--no-header"],
+            [sys.executable, "-m", "pytest", tmp, "-v", "--tb=short", "--no-header",
+             "--import-mode=importlib"],
             capture_output=True, text=True, timeout=15,
         )
         raw = proc.stdout + proc.stderr
@@ -360,6 +460,52 @@ def docstring_checker(task_input: str) -> ToolResult:
         raw_text=raw,
     )
 
+
+
+def extract_fix_from_code(raw_text: str) -> "Optional[str]":
+    """
+    Extract the first syntactically valid Python function from raw text.
+    Used as a fallback when JSON parsing fails or the fix field is missing.
+    Tries fenced code blocks first, then bare def blocks.
+    """
+    import re as _re
+    import ast as _ast
+
+    # Priority 1: fenced code block
+    for block in _re.findall(r"```(?:python)?[^\n]*\n(.*?)```", raw_text, _re.DOTALL):
+        block = block.strip()
+        if "def " in block:
+            try:
+                _ast.parse(block)
+                return block
+            except SyntaxError:
+                pass
+
+    # Priority 2: bare def block — collect lines from first def until blank line
+    # after a return statement
+    lines = raw_text.splitlines()
+    collected: list = []
+    for line in lines:
+        if _re.match(r"^def ", line):
+            collected = [line]
+        elif collected:
+            if line == "" and any("return" in l for l in collected):
+                break
+            if line and not line[0].isspace() and not line.startswith("def ") and collected:
+                # Non-indented non-def line ends the function
+                break
+            collected.append(line)
+
+    if collected:
+        candidate = "\n".join(collected).strip()
+        try:
+            _ast.parse(candidate)
+            if "return" in candidate or "pass" in candidate:
+                return candidate
+        except SyntaxError:
+            pass
+
+    return None
 
 # ---------------------------------------------------------------------------
 # Registry

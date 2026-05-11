@@ -10,6 +10,7 @@ from blueprint_evaluator import BlueprintEvaluator
 from blueprint_mutator import BlueprintMutator
 from domain_profiler import DomainProfiler
 from models import AgentBlueprint, EvaluationResult
+from mutation_loop import MutationLoop
 from dotenv import load_dotenv
 
 
@@ -50,38 +51,37 @@ def evaluation_to_dict(result: EvaluationResult) -> Dict[str, Any]:
     }
 
 
-def run_pipeline(task_prompt: str) -> Dict[str, Any]:
+def run_pipeline(task_prompt: str, task_input: str = "") -> Dict[str, Any]:
     profiler = DomainProfiler()
     architecture_generator = ArchitectureGenerator()
-    mutator = BlueprintMutator()
     evaluator = BlueprintEvaluator()
 
     profile = profiler.profile(task_prompt)
-
     base_blueprint = architecture_generator.generate(profile)
-    mutated_blueprint = mutator.mutate(base_blueprint)
 
+    # Multi-round evolution with real tool feedback when input is provided
+    loop = MutationLoop(max_rounds=4, run_tools=bool(task_input.strip()))
+    evolution = loop.run(base_blueprint, task_input=task_input)
+
+    selected_blueprint = evolution.best_blueprint
+    base_round = evolution.rounds[0]
+    best_round = max(evolution.rounds, key=lambda r: r.combined_score)
+
+    # Evaluate base and selected for display
     base_eval = evaluator.evaluate(base_blueprint)
-    mutated_eval = evaluator.evaluate(mutated_blueprint)
-
-    if mutated_eval.score > base_eval.score:
-        selected = "mutated"
-        selected_blueprint = mutated_blueprint
-        selected_eval = mutated_eval
-    else:
-        selected = "base"
-        selected_blueprint = base_blueprint
-        selected_eval = base_eval
+    selected_eval = evaluator.evaluate(selected_blueprint)
 
     return {
         "profile": profile,
         "base_blueprint": base_blueprint,
-        "mutated_blueprint": mutated_blueprint,
-        "base_eval": base_eval,
-        "mutated_eval": mutated_eval,
-        "selected": selected,
         "selected_blueprint": selected_blueprint,
+        "base_eval": base_eval,
         "selected_eval": selected_eval,
+        "evolution": evolution,
+        "base_score": base_round.combined_score,
+        "best_score": best_round.combined_score,
+        "rounds_run": evolution.total_mutations,
+        "stopping_reason": evolution.stopping_reason,
     }
 
 def display_field(key: str, value: Any) -> None:
@@ -148,7 +148,15 @@ def display_structured_result(result: Dict[str, Any]) -> None:
         "limitations",
     ]
 
-    shown_keys = {"summary", "answer", "final_verdict", "risk_level"}
+    shown_keys = {
+        "summary", "answer", "final_verdict", "risk_level",
+        # runner metadata — shown elsewhere or not useful in structured output
+        "workflow", "tools_called", "history_length", "runner",
+        "model", "final_status", "task_input_preview", "blueprint_name",
+        "domain", "subdomain", "raw_output", "executed_steps",
+        "tool_results", "rounds_taken", "first_attempt_passed",
+        "final_pytest_passed", "final_fix",
+    }
 
     for key in priority_keys:
         if key in result:
@@ -168,20 +176,37 @@ def display_structured_result(result: Dict[str, Any]) -> None:
 def display_runner_output(run_result: Dict[str, Any]) -> None:
     runner = run_result.get("runner", "deterministic")
     final_status = run_result.get("final_status", "unknown")
+    rounds_taken = run_result.get("rounds_taken")
+    first_attempt = run_result.get("first_attempt_passed")
+    final_pytest = run_result.get("final_pytest_passed")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         st.metric("Runner", runner)
-
     with col2:
         st.metric("Status", final_status)
-
     with col3:
-        if runner == "llm":
+        if "llm" in runner:
             st.metric("Model", run_result.get("model", "unknown"))
         else:
             st.metric("Executed Steps", len(run_result.get("executed_steps", [])))
+
+    # Show feedback loop metrics if available
+    if rounds_taken is not None:
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            st.metric("Revision rounds", rounds_taken)
+        with fc2:
+            if first_attempt is not None:
+                st.metric("First attempt", "passed" if first_attempt else "failed")
+        with fc3:
+            if final_pytest is not None:
+                st.metric("Final pytest", "passed" if final_pytest else "failed")
+
+    tools_called = run_result.get("tools_called", [])
+    if tools_called:
+        st.caption(f"Tools called: {', '.join(tools_called)}")
 
     parsed_output = run_result.get("parsed_output")
 
@@ -296,42 +321,45 @@ def main() -> None:
             return
 
         with st.spinner("Growing specialist agent..."):
-            pipeline_result = run_pipeline(task_prompt)
+            pipeline_result = run_pipeline(task_prompt, task_input=task_input)
 
         profile = pipeline_result["profile"]
         base_blueprint = pipeline_result["base_blueprint"]
-        mutated_blueprint = pipeline_result["mutated_blueprint"]
-        base_eval = pipeline_result["base_eval"]
-        mutated_eval = pipeline_result["mutated_eval"]
-        selected = pipeline_result["selected"]
         selected_blueprint = pipeline_result["selected_blueprint"]
+        base_eval = pipeline_result["base_eval"]
+        selected_eval = pipeline_result["selected_eval"]
+        evolution = pipeline_result["evolution"]
 
         st.success("Pipeline completed.")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
             st.metric("Domain", profile.domain)
-
         with col2:
             st.metric("Subdomain", profile.subdomain)
-
         with col3:
-            st.metric("Selected", selected)
+            st.metric("Rounds run", pipeline_result["rounds_run"])
+        with col4:
+            st.metric("Stopping reason", pipeline_result["stopping_reason"].replace("_", " "))
+
+        st.subheader("Evolution")
+
+        st.code(evolution.summary_table(), language=None)
 
         st.subheader("Evaluation Comparison")
 
         eval_col1, eval_col2 = st.columns(2)
 
         with eval_col1:
-            st.metric("Base Score", base_eval.score)
+            st.metric("Base Combined Score", round(pipeline_result["base_score"], 2))
             st.write("Failed checks:")
             st.write(base_eval.failed_checks)
 
         with eval_col2:
-            st.metric("Mutated Score", mutated_eval.score)
+            st.metric("Selected Combined Score", round(pipeline_result["best_score"], 2))
             st.write("Failed checks:")
-            st.write(mutated_eval.failed_checks)
+            st.write(selected_eval.failed_checks)
 
         st.subheader("Selected Blueprint")
 
