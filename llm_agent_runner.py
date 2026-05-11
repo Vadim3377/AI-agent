@@ -1,35 +1,40 @@
 """
-llm_agent_runner.py — LLM-backed agent runner with tool feedback loop.
+llm_agent_runner.py — LLM-backed agent runner with tool feedback loops.
 
-The runner executes an AgentBlueprint using an OpenAI model. Unlike the
-deterministic AgentRunner, it performs semantic reasoning over real input.
+Tool feedback loop — debugging
+--------------------------------
+After the initial fix attempt the runner calls pytest_runner on the suggested
+fix. If tests fail, the failure output is sent back and a revision is
+requested. Repeats for up to MAX_REVISION_ROUNDS.
 
-Tool feedback loop (new)
-------------------------
-After the initial fix attempt, the runner checks whether the blueprint's
-workflow contains verification steps (e.g. verify_fix_against_generated_tests).
-If so, it calls pytest_runner on the suggested fix and observes the result.
-If pytest fails, it sends the failure output back to the LLM as a new message
-and asks for a revision. This repeats for up to MAX_REVISION_ROUNDS.
+Tool feedback loop — documentation
+-------------------------------------
+After the initial documentation pass the runner calls the quality-aware
+docstring checker on the output code. A docstring is COMPLETE only if it
+contains an Args: section (for functions with parameters) and a Returns:
+section (for functions that return a value). If quality coverage is below
+MIN_DOCSTRING_COVERAGE, incomplete symbol names are sent back and a revision
+is requested. Repeats for up to MAX_DOC_REVISION_ROUNDS.
 
-This makes the blueprint's verification workflow steps real rather than
-descriptive: a blueprint that includes explicit verification steps triggers
-more revision rounds, giving it a meaningful behavioural advantage over a
-base blueprint that does not.
+Two important implementation details in the checker
+----------------------------------------------------
+1. Top-level traversal only: ast.walk visits the entire tree including nested
+   functions (closures like `target` inside `call_with_timeout`). These are
+   implementation details, not public API, and should not be counted.
+   The checker uses ast.iter_child_nodes at module and class level only,
+   which correctly excludes nested functions.
 
-Metrics tracked per run
------------------------
-- rounds_taken: how many revision rounds were needed (0 = first attempt passed)
-- first_attempt_passed: whether the initial fix passed pytest without revision
-- final_pytest_passed: whether the final fix passes pytest
-
-These metrics feed directly into task_benchmark.py's before/after comparison.
-A mutated blueprint that produces better first-attempt fixes will show lower
-rounds_taken on average — a real, measurable difference.
+2. Threshold is 0.90 (not 0.80): with 4-5 symbol modules, 4/5 = 0.80 exactly
+   meets a >= 0.80 threshold even when one symbol is incomplete. 0.90 ensures
+   the loop fires whenever any public symbol has an incomplete docstring in
+   modules of this size.
 """
 
+import ast
 import json
 import os
+import re
+import textwrap
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -38,78 +43,230 @@ from openai import OpenAI
 from models import AgentBlueprint
 from tools import pytest_runner, extract_fix_from_code
 
+load_dotenv()
 
 MAX_REVISION_ROUNDS = 3
+MAX_DOC_REVISION_ROUNDS = 2
+MIN_DOCSTRING_COVERAGE = 0.90   # requires all-but-one complete in 5-symbol modules
 
-# Workflow step keywords that indicate the blueprint expects verification
-# Active verification signals — steps that explicitly verify a fix against tests.
-# "run_tests_if_available" is passive and does NOT trigger the loop.
-# "verify_fix_against_generated_tests" is active and DOES trigger it.
-# This is the key behavioural difference between base and mutated blueprints.
+
+# ---------------------------------------------------------------------------
+# Blueprint capability detection
+# ---------------------------------------------------------------------------
+
 _VERIFICATION_SIGNALS = [
-    "verify_fix",
-    "verify_against",
-    "check_fix",
-    "regression_risk",
-    "rerun",
-    "validate_fix",
+    "verify_fix", "verify_against", "check_fix",
+    "regression_risk", "rerun", "validate_fix",
+]
+
+_DOC_VERIFICATION_SIGNALS = [
+    "verify_docstring", "check_coverage", "docstring_coverage",
+    "verify_comment", "coverage_check", "check_docstrings",
 ]
 
 
 def _blueprint_expects_verification(blueprint: AgentBlueprint) -> bool:
-    """
-    Return True if the blueprint's workflow contains ACTIVE verification steps.
-
-    Passive steps like "run_tests_if_available" do not trigger the feedback loop.
-    Active steps like "verify_fix_against_generated_tests" do.
-    This creates a real behavioural difference between base and mutated blueprints:
-      - Base blueprint:    single-shot LLM call (no revision rounds)
-      - Mutated blueprint: up to MAX_REVISION_ROUNDS with pytest feedback
-    """
     text = " ".join(blueprint.workflow).lower()
     return any(signal in text for signal in _VERIFICATION_SIGNALS)
 
 
+def _blueprint_expects_doc_verification(blueprint: AgentBlueprint) -> bool:
+    text = " ".join(blueprint.workflow).lower()
+    return any(signal in text for signal in _DOC_VERIFICATION_SIGNALS)
+
+
+# ---------------------------------------------------------------------------
+# Quality-aware docstring checker
+# Shared by the runner loop and the benchmark — identical standard
+# ---------------------------------------------------------------------------
+
+def _has_args_section(doc: str) -> bool:
+    return bool(re.search(r"(Args|Arguments|Parameters)\s*:", doc, re.IGNORECASE))
+
+
+def _has_returns_section(doc: str) -> bool:
+    return bool(re.search(r"(Returns|Yields|Return)\s*:", doc, re.IGNORECASE))
+
+
+def _node_has_params(node: ast.FunctionDef) -> bool:
+    all_args = node.args.args + node.args.posonlyargs + node.args.kwonlyargs
+    meaningful = [a for a in all_args if a.arg not in ("self", "cls")]
+    return bool(meaningful) or bool(node.args.vararg) or bool(node.args.kwarg)
+
+
+def _node_has_return(node: ast.FunctionDef) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Return) and child.value is not None:
+            return True
+    return False
+
+
+def _get_public_nodes(tree: ast.Module) -> List[ast.AST]:
+    """
+    Return module-level and class-level function/class nodes only.
+
+    ast.walk traverses the entire tree, picking up nested functions
+    (closures, helpers defined inside other functions). These are
+    implementation details that should not be required to have docstrings.
+
+    This function uses ast.iter_child_nodes at two levels:
+      - Module children: top-level functions and classes
+      - Class children: methods (one level inside a class body)
+
+    Nested functions defined inside other functions are excluded.
+    """
+    nodes: List[ast.AST] = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            nodes.append(node)
+        elif isinstance(node, ast.ClassDef):
+            nodes.append(node)
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    nodes.append(child)
+    return nodes
+
+
+def _measure_docstring_coverage(code: str) -> Dict[str, Any]:
+    """
+    Quality-aware docstring coverage.
+
+    A symbol is COMPLETE if:
+    - It has any docstring, AND
+    - Functions with params have an Args: section, AND
+    - Functions with return values have a Returns: section
+    - Classes need only a docstring (no Args/Returns required)
+
+    Only top-level and class-level symbols are counted.
+    Nested functions (closures) are excluded.
+
+    Returns:
+        coverage  : fraction of public symbols with complete docstrings
+        total     : total public symbols examined
+        complete  : count of complete symbols
+        missing   : names of symbols with no docstring
+        incomplete: names of symbols with docstring but missing Args/Returns
+        success   : False if code could not be parsed
+    """
+    if not code.strip():
+        return {
+            "coverage": 0.0, "total": 0, "complete": 0,
+            "missing": [], "incomplete": [], "success": False,
+        }
+
+    try:
+        tree = ast.parse(textwrap.dedent(code))
+    except SyntaxError as exc:
+        return {
+            "coverage": 0.0, "total": 0, "complete": 0,
+            "missing": [], "incomplete": [], "error": str(exc), "success": False,
+        }
+
+    total = 0
+    complete = 0
+    missing: List[str] = []
+    incomplete: List[str] = []
+
+    for node in _get_public_nodes(tree):
+        if node.name.startswith("_"):
+            continue
+
+        total += 1
+
+        has_any = (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        )
+
+        if not has_any:
+            missing.append(node.name)
+            continue
+
+        doc = node.body[0].value.value
+
+        if isinstance(node, ast.ClassDef):
+            complete += 1
+            continue
+
+        needs_args = _node_has_params(node)
+        needs_returns = _node_has_return(node)
+        ok = True
+        if needs_args and not _has_args_section(doc):
+            ok = False
+        if needs_returns and not _has_returns_section(doc):
+            ok = False
+
+        if ok:
+            complete += 1
+        else:
+            incomplete.append(node.name)
+
+    coverage = round(complete / total, 3) if total > 0 else 0.0
+    return {
+        "coverage": coverage,
+        "total": total,
+        "complete": complete,
+        "missing": missing,
+        "incomplete": incomplete,
+        "success": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Code extraction helper
+# ---------------------------------------------------------------------------
+
+def _extract_python_code(raw: str) -> str:
+    blocks = re.findall(r"```python\s*\n(.*?)```", raw, re.DOTALL)
+    if blocks:
+        return max(blocks, key=len).strip()
+    blocks = re.findall(r"```\s*\n(.*?)```", raw, re.DOTALL)
+    if blocks:
+        return max(blocks, key=len).strip()
+    try:
+        ast.parse(raw.strip())
+        return raw.strip()
+    except SyntaxError:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Main runner
+# ---------------------------------------------------------------------------
+
 class LLMAgentRunner:
     """
-    Executes a selected AgentBlueprint using an OpenAI model with a
-    tool feedback loop for debugging tasks.
-
-    For non-debugging domains the runner behaves as before (single-shot).
-    For debugging, it runs up to MAX_REVISION_ROUNDS of:
-      1. Generate fix
-      2. Run pytest_runner on fix
-      3. If failed: send failure output back, ask for revision
-      4. Repeat until pass or rounds exhausted
+    Executes a selected AgentBlueprint using an OpenAI model with
+    tool feedback loops for debugging and documentation domains.
     """
 
     def __init__(self, model: str = "gpt-4.1-mini") -> None:
-        load_dotenv()
         if not os.getenv("OPENAI_API_KEY"):
-            raise ValueError(
-                "OPENAI_API_KEY is missing. Set it in .env or environment."
-            )
+            raise ValueError("OPENAI_API_KEY is missing. Set it in .env or environment.")
         self.client = OpenAI()
         self.model = model
 
     def run(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
-        is_debugging = "debug" in blueprint.domain_profile.subdomain.lower()
-        use_loop = is_debugging and _blueprint_expects_verification(blueprint)
+        subdomain = blueprint.domain_profile.subdomain.lower()
 
-        if use_loop:
-            return self._run_with_feedback_loop(blueprint, task_input)
-        else:
-            return self._run_single_shot(blueprint, task_input)
+        if "debug" in subdomain and _blueprint_expects_verification(blueprint):
+            return self._run_debugging_loop(blueprint, task_input)
+
+        if ("doc" in subdomain or "comment" in subdomain) and _blueprint_expects_doc_verification(blueprint):
+            return self._run_documentation_loop(blueprint, task_input)
+
+        return self._run_single_shot(blueprint, task_input)
 
     # ------------------------------------------------------------------
-    # Single-shot execution (non-debugging domains, unchanged behaviour)
+    # Single-shot
     # ------------------------------------------------------------------
 
     def _run_single_shot(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
         prompt = self._build_initial_prompt(blueprint, task_input)
         raw_text = self._call_llm(prompt)
         parsed = self._try_parse_json(raw_text)
-
         return {
             "runner": "llm",
             "model": self.model,
@@ -127,21 +284,12 @@ class LLMAgentRunner:
         }
 
     # ------------------------------------------------------------------
-    # Tool feedback loop (debugging domain)
+    # Debugging feedback loop
     # ------------------------------------------------------------------
 
-    def _run_with_feedback_loop(
-        self, blueprint: AgentBlueprint, task_input: str
-    ) -> Dict[str, Any]:
-        """
-        Multi-turn execution loop:
-          round 0: initial fix attempt
-          round 1+: revision based on pytest failure output
-        Stops when pytest passes or MAX_REVISION_ROUNDS is reached.
-        """
+    def _run_debugging_loop(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
         history: List[Dict[str, str]] = []
-        initial_prompt = self._build_initial_prompt(blueprint, task_input)
-        history.append({"role": "user", "content": initial_prompt})
+        history.append({"role": "user", "content": self._build_initial_prompt(blueprint, task_input)})
 
         rounds_taken = 0
         first_attempt_passed: Optional[bool] = None
@@ -151,33 +299,28 @@ class LLMAgentRunner:
         final_pytest_passed = False
 
         for round_no in range(MAX_REVISION_ROUNDS + 1):
-            # Call LLM with full conversation history
             raw_text = self._call_llm_with_history(history)
             final_raw = raw_text
             history.append({"role": "assistant", "content": raw_text})
-
             parsed = self._try_parse_json(raw_text)
             final_parsed = parsed
 
-            # Extract the fix from parsed JSON or raw text
             fix = self._extract_fix(parsed, raw_text)
             final_fix = fix
 
             if not fix:
-                # No code found — ask for clarification in next round
                 if round_no < MAX_REVISION_ROUNDS:
                     history.append({
                         "role": "user",
                         "content": (
-                            "Your response did not contain a complete Python function "
-                            "in the suggested_fix field. Please provide the full corrected "
-                            "function starting with 'def '. Return only valid JSON."
+                            "Your response did not contain a complete Python function. "
+                            "Please provide the full corrected function starting with 'def '. "
+                            "Return only valid JSON."
                         ),
                     })
                 rounds_taken = round_no
                 continue
 
-            # Run pytest on the fix
             pytest_result = pytest_runner(fix)
             final_pytest_passed = pytest_result.success
 
@@ -188,15 +331,14 @@ class LLMAgentRunner:
                 rounds_taken = round_no
                 break
 
-            # pytest failed — build revision prompt with failure evidence
             if round_no < MAX_REVISION_ROUNDS:
-                failure_summary = self._summarise_pytest_failure(
-                    pytest_result.raw_text, fix
-                )
-                revision_prompt = self._build_revision_prompt(
-                    task_input, fix, failure_summary, round_no + 1
-                )
-                history.append({"role": "user", "content": revision_prompt})
+                failure_summary = self._summarise_pytest_failure(pytest_result.raw_text, fix)
+                history.append({
+                    "role": "user",
+                    "content": self._build_revision_prompt(
+                        task_input, fix, failure_summary, round_no + 1
+                    ),
+                })
                 rounds_taken = round_no + 1
             else:
                 rounds_taken = round_no
@@ -220,6 +362,91 @@ class LLMAgentRunner:
         }
 
     # ------------------------------------------------------------------
+    # Documentation feedback loop
+    # ------------------------------------------------------------------
+
+    def _run_documentation_loop(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
+        """
+        Multi-turn documentation loop using quality-aware coverage.
+
+        round 0: ask for documented code with Google-style Args/Returns sections
+        round 1+: measure quality coverage with the AST checker; if below
+                  MIN_DOCSTRING_COVERAGE, send back the list of incomplete
+                  symbols and request a targeted revision
+
+        Stops when quality coverage >= MIN_DOCSTRING_COVERAGE or
+        MAX_DOC_REVISION_ROUNDS is reached. The stopping criterion is
+        evidence-driven: the agent stops when a real tool confirms the quality
+        target is met, not when a fixed iteration count is exhausted.
+        """
+        history: List[Dict[str, str]] = []
+        history.append({"role": "user", "content": self._build_doc_prompt(blueprint, task_input)})
+
+        doc_rounds_taken = 0
+        initial_coverage: Optional[float] = None
+        final_coverage: Optional[float] = None
+        final_code: str = ""
+        final_raw: str = ""
+
+        for round_no in range(MAX_DOC_REVISION_ROUNDS + 1):
+            raw_text = self._call_llm_with_history(history)
+            final_raw = raw_text
+            history.append({"role": "assistant", "content": raw_text})
+
+            code = _extract_python_code(raw_text)
+            if not code:
+                parsed = self._try_parse_json(raw_text)
+                if parsed and isinstance(parsed, dict):
+                    for key in ("documented_code", "code", "result", "output"):
+                        val = parsed.get(key, "")
+                        if isinstance(val, str) and val.strip():
+                            code = _extract_python_code(val) or val.strip()
+                            break
+
+            final_code = code
+
+            cov_result = _measure_docstring_coverage(code)
+            coverage = cov_result["coverage"]
+            missing = cov_result.get("missing", [])
+            incomplete = cov_result.get("incomplete", [])
+            all_needing_work = missing + incomplete
+
+            if round_no == 0:
+                initial_coverage = coverage
+
+            final_coverage = coverage
+            doc_rounds_taken = round_no
+
+            if coverage >= MIN_DOCSTRING_COVERAGE or not all_needing_work:
+                break
+
+            if round_no < MAX_DOC_REVISION_ROUNDS:
+                history.append({
+                    "role": "user",
+                    "content": self._build_doc_revision_prompt(
+                        coverage, missing, incomplete, round_no + 1
+                    ),
+                })
+
+        return {
+            "runner": "llm_with_doc_feedback",
+            "model": self.model,
+            "blueprint_name": blueprint.name,
+            "domain": blueprint.domain_profile.domain,
+            "subdomain": blueprint.domain_profile.subdomain,
+            "workflow": blueprint.workflow,
+            "task_input_preview": task_input[:250],
+            "raw_output": final_raw,
+            "final_code": final_code,
+            "final_status": "completed",
+            "doc_rounds_taken": doc_rounds_taken,
+            "initial_coverage": initial_coverage,
+            "final_coverage": final_coverage,
+            "coverage_improved": (final_coverage or 0) > (initial_coverage or 0),
+            "history_length": len(history),
+        }
+
+    # ------------------------------------------------------------------
     # Prompt builders
     # ------------------------------------------------------------------
 
@@ -227,7 +454,6 @@ class LLMAgentRunner:
         schema_str = json.dumps(blueprint.output_schema, indent=2)
         tools_str = json.dumps(blueprint.tools, indent=2)
         workflow_str = json.dumps(blueprint.workflow, indent=2)
-
         verification_note = ""
         if _blueprint_expects_verification(blueprint):
             verification_note = (
@@ -236,34 +462,72 @@ class LLMAgentRunner:
                 "check for off-by-one errors, missing returns, wrong operators, and "
                 "edge cases before finalising your answer.\n"
             )
-
         return (
             "You are executing a specialised AI agent blueprint.\n\n"
             f"Agent name:\n{blueprint.name}\n\n"
             f"Agent role:\n{blueprint.role}\n\n"
-            f"Domain:\n{blueprint.domain_profile.domain} / "
-            f"{blueprint.domain_profile.subdomain}\n\n"
+            f"Domain:\n{blueprint.domain_profile.domain} / {blueprint.domain_profile.subdomain}\n\n"
             f"Workflow steps:\n{workflow_str}\n\n"
             f"Available tools:\n{tools_str}\n\n"
             f"Expected output schema:\n{schema_str}\n\n"
             f"{verification_note}"
-            f"Task input (buggy code to debug):\n{task_input}\n\n"
+            f"Task input:\n{task_input}\n\n"
             "Instructions:\n"
             "1. Follow the workflow steps in order.\n"
             "2. Return only valid JSON matching the output schema. No markdown fences.\n"
             "3. CRITICAL: the 'suggested_fix' field MUST contain the complete corrected "
-            "Python function as runnable code — NOT a description. It must start with "
-            "'def ' and be syntactically valid Python.\n"
-            "   Correct:   \"suggested_fix\": \"def add(a, b):\\n    return a + b\"\n"
-            "   Incorrect: \"suggested_fix\": \"Change minus to plus\"\n"
+            "Python function as runnable code starting with 'def '.\n"
         )
 
-    def _build_revision_prompt(
+    def _build_doc_prompt(self, blueprint: AgentBlueprint, task_input: str) -> str:
+        workflow_str = json.dumps(blueprint.workflow, indent=2)
+        return (
+            "You are executing a documentation-specialist agent blueprint.\n\n"
+            f"Agent name:\n{blueprint.name}\n\n"
+            f"Agent role:\n{blueprint.role}\n\n"
+            f"Workflow steps:\n{workflow_str}\n\n"
+            "Task: Add Google-style docstrings to every public function and class "
+            "in the following Python code.\n\n"
+            "Requirements:\n"
+            "- Every public function must have a docstring.\n"
+            "- Functions with parameters MUST include an Args: section listing "
+            "each parameter with its type and description.\n"
+            "- Functions that return a value MUST include a Returns: section.\n"
+            "- Keep all code logic unchanged.\n\n"
+            f"Code to document:\n{task_input}\n\n"
+            "Return ONLY the documented Python code inside a ```python ... ``` block. "
+            "No JSON, no explanation."
+        )
+
+    def _build_doc_revision_prompt(
         self,
-        original_buggy_code: str,
-        previous_fix: str,
-        failure_summary: str,
+        current_coverage: float,
+        missing: List[str],
+        incomplete: List[str],
         round_no: int,
+    ) -> str:
+        lines = [
+            f"Quality coverage check (round {round_no}):",
+            f"Current quality coverage: {current_coverage:.0%}",
+            f"Target: {MIN_DOCSTRING_COVERAGE:.0%}",
+        ]
+        if missing:
+            lines.append(f"No docstring at all: {', '.join(missing)}")
+        if incomplete:
+            lines.append(
+                f"Docstring present but missing Args:/Returns: sections: {', '.join(incomplete)}"
+            )
+        lines += [
+            "",
+            "Please add or complete the docstrings for all listed symbols.",
+            "Each function with parameters needs an Args: section.",
+            "Each function that returns a value needs a Returns: section.",
+            "Return the updated code inside a ```python ... ``` block.",
+        ]
+        return "\n".join(lines)
+
+    def _build_revision_prompt(
+        self, original_buggy_code: str, previous_fix: str, failure_summary: str, round_no: int
     ) -> str:
         return (
             f"Your fix from round {round_no - 1} was tested and FAILED.\n\n"
@@ -277,51 +541,40 @@ class LLMAgentRunner:
         )
 
     def _summarise_pytest_failure(self, raw_pytest_output: str, fix: str) -> str:
-        """Extract the most useful part of pytest output for the revision prompt."""
         lines = raw_pytest_output.splitlines()
-        # Keep FAILED lines, assertion errors, and short lines
-        useful = []
-        for line in lines:
-            if any(kw in line for kw in ["FAILED", "AssertionError", "assert", "Error", "def test_"]):
-                useful.append(line.strip())
-        summary = "\n".join(useful[:20]) if useful else raw_pytest_output[:400]
-        return summary or "Tests failed but no detailed output was captured."
+        useful = [
+            line.strip() for line in lines
+            if any(kw in line for kw in ["FAILED", "AssertionError", "assert", "Error", "def test_"])
+        ]
+        return "\n".join(useful[:20]) if useful else raw_pytest_output[:400]
 
     # ------------------------------------------------------------------
-    # LLM call helpers
+    # LLM helpers
     # ------------------------------------------------------------------
 
     def _call_llm(self, prompt: str) -> str:
-        response = self.client.responses.create(
-            model=self.model,
-            input=prompt,
-        )
+        response = self.client.responses.create(model=self.model, input=prompt)
         return response.output_text
 
     def _call_llm_with_history(self, history: List[Dict[str, str]]) -> str:
-        # Responses API: pass full history as a list of message dicts
-        response = self.client.responses.create(
-            model=self.model,
-            input=history,
-        )
+        response = self.client.responses.create(model=self.model, input=history)
         return response.output_text
 
     # ------------------------------------------------------------------
-    # Fix extraction
+    # Fix extraction (debugging)
     # ------------------------------------------------------------------
 
     def _extract_fix(self, parsed: Optional[Dict], raw_text: str) -> Optional[str]:
-        """Extract a runnable Python fix from parsed JSON or raw text."""
         if parsed and isinstance(parsed, dict):
-            for key in ("suggested_fix", "fix", "fixed_code", "corrected_code",
-                        "fix_code", "proposed_fix", "solution", "corrected_function"):
+            for key in (
+                "suggested_fix", "fix", "fixed_code", "corrected_code",
+                "fix_code", "proposed_fix", "solution", "corrected_function",
+            ):
                 val = parsed.get(key, "")
                 if isinstance(val, str) and val.strip():
                     cleaned = self._clean_code(val.strip())
                     if cleaned.startswith("def ") or "return" in cleaned:
                         return cleaned
-
-        # Fallback: extract from raw text
         return extract_fix_from_code(raw_text)
 
     def _clean_code(self, code: str) -> str:

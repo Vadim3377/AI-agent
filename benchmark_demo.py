@@ -1,16 +1,17 @@
 """
-benchmark_demo.py — Full pipeline benchmark across all supported task categories.
+benchmark_demo.py — Stem agent pipeline benchmark.
 
-For each task the benchmark:
-  1. Profiles the prompt (DomainProfiler)
-  2. Generates a base blueprint (ArchitectureGenerator)
-  3. Runs the multi-round MutationLoop with real tool feedback
-  4. Selects the best blueprint
-  5. Executes the selected blueprint (AgentRunner, with real tools)
-  6. Records structural score, task-level score, and tools called
+Runs the full deterministic pipeline across all five supported task categories
+and reports:
 
-This replaces the original single-mutation + structural-only comparison.
-The per-task input snippets are real code so tools have something to run on.
+  1. Blueprint structural scores (base vs mutated)
+  2. Classification method per task (llm | keyword | fallback) and LLM reasoning
+  3. Classifier agreement — whether LLM and keyword routing would have agreed
+
+The classification comparison is new. It answers the question: how much was
+the keyword classifier missing? If the LLM classifier routes a task differently
+than keywords would, that is direct evidence that semantic reading adds value
+over enumeration.
 """
 
 import json
@@ -21,10 +22,9 @@ from agent_runner import AgentRunner
 from architecture_generator import ArchitectureGenerator
 from blueprint_evaluator import BlueprintEvaluator
 from blueprint_mutator import BlueprintMutator
+from domain_classifier import DomainClassifier, _classify_with_keywords
 from domain_profiler import DomainProfiler
 from models import save_blueprint
-from mutation_loop import MutationLoop
-
 
 BENCHMARK_TASKS = [
     {
@@ -35,31 +35,17 @@ BENCHMARK_TASKS = [
     {
         "id": "code_quality_cleanup",
         "task": "Clean up this code, remove dead code, simplify redundant logic, and improve readability.",
-        "input": (
-            "def calculate(x):\n"
-            "    unused = 123\n"
-            "    result = x * 1\n"
-            "    if True:\n"
-            "        return result\n"
-        ),
+        "input": "def calculate(x):\n    unused = 123\n    result = x * 1\n    if True:\n        return result",
     },
     {
         "id": "comments_and_documentation",
         "task": "Add useful comments and docstrings to explain the code.",
-        "input": (
-            "def normalise(values):\n"
-            "    m = max(values)\n"
-            "    return [v / m for v in values]\n"
-        ),
+        "input": "def normalise(values):\n    m = max(values)\n    return [v / m for v in values]",
     },
     {
         "id": "security",
         "task": "Check this code for dangerous operations, API key leaks, passwords, and possible data breaches.",
-        "input": (
-            "API_KEY = 'sk-test-abcdefghij123456789012345678'\n"
-            "password = 'admin123'\n"
-            "eval(user_input)\n"
-        ),
+        "input": "API_KEY = 'sk-test-123'\npassword = 'admin'\neval(user_input)",
     },
     {
         "id": "code_research",
@@ -71,54 +57,121 @@ BENCHMARK_TASKS = [
 
 class BenchmarkDemo:
     """
-    Runs the full stem-agent pipeline on all supported task categories.
-    Uses MutationLoop (multi-round) instead of a single mutation.
+    Runs the full stem-agent pipeline on the benchmark task set.
+
+    For each task:
+    1. Classify with both LLM and keyword classifiers (to measure agreement)
+    2. Profile the domain
+    3. Generate base blueprint
+    4. Mutate
+    5. Evaluate base vs mutated
+    6. Select stronger blueprint
+    7. Execute with deterministic runner
     """
 
     def __init__(self) -> None:
+        self.classifier = DomainClassifier()
         self.profiler = DomainProfiler()
         self.architecture_generator = ArchitectureGenerator()
+        self.mutator = BlueprintMutator()
         self.evaluator = BlueprintEvaluator()
         self.runner = AgentRunner()
 
     def run(self) -> List[Dict[str, Any]]:
-        return [self._run_case(task) for task in BENCHMARK_TASKS]
+        results = []
+        for task_case in BENCHMARK_TASKS:
+            result = self._run_case(task_case)
+            results.append(result)
+            _print_case(result)
+        return results
 
     def _run_case(self, task_case: Dict[str, str]) -> Dict[str, Any]:
-        profile = self.profiler.profile(task_case["task"])
+        task_text = task_case["task"]
+
+        # --- Classification (new) ---
+        llm_classification = self.classifier.classify(task_text)
+
+        # Also run keyword fallback explicitly so we can compare
+        keyword_classification = _classify_with_keywords(
+            " ".join(task_text.lower().split())
+        )
+
+        classifiers_agree = (
+            llm_classification.domain == keyword_classification.domain
+            and llm_classification.subdomain == keyword_classification.subdomain
+        )
+
+        # --- Rest of pipeline (unchanged) ---
+        profile = self.profiler.profile(task_text)
         base_blueprint = self.architecture_generator.generate(profile)
+        mutated_blueprint = self.mutator.mutate(base_blueprint)
+        base_eval = self.evaluator.evaluate(base_blueprint)
+        mutated_eval = self.evaluator.evaluate(mutated_blueprint)
 
-        # Multi-round evolution with real tool feedback
-        loop = MutationLoop(max_rounds=4, run_tools=bool(task_case["input"].strip()))
-        evolution = loop.run(base_blueprint, task_input=task_case["input"])
+        if mutated_eval.score > base_eval.score:
+            selected = "mutated"
+            selected_blueprint = mutated_blueprint
+            selected_eval = mutated_eval
+        else:
+            selected = "base"
+            selected_blueprint = base_blueprint
+            selected_eval = base_eval
 
-        selected_blueprint = evolution.best_blueprint
-        base_round = evolution.rounds[0]
-        best_round = max(evolution.rounds, key=lambda r: r.combined_score)
-
-        # Execute selected blueprint with real tools
         run_result = self.runner.run(selected_blueprint, task_case["input"])
 
         return {
             "task_id": task_case["id"],
-            "task": task_case["task"],
+            "task": task_text,
+            # Classification
+            "classification_method": llm_classification.classification_method,
+            "llm_domain": llm_classification.domain,
+            "llm_subdomain": llm_classification.subdomain,
+            "llm_confidence": llm_classification.confidence,
+            "llm_reasoning": llm_classification.llm_reasoning or "",
+            "keyword_domain": keyword_classification.domain,
+            "keyword_subdomain": keyword_classification.subdomain,
+            "classifiers_agree": classifiers_agree,
+            # Blueprint scores
             "domain": profile.domain,
             "subdomain": profile.subdomain,
             "base_blueprint": base_blueprint.name,
+            "mutated_blueprint": mutated_blueprint.name,
+            "base_score": base_eval.score,
+            "mutated_score": mutated_eval.score,
+            "selected": selected,
             "selected_blueprint": selected_blueprint.name,
-            "base_structural_score": base_round.structural_score,
-            "base_task_score": base_round.task_score,
-            "base_combined_score": base_round.combined_score,
-            "best_structural_score": best_round.structural_score,
-            "best_task_score": best_round.task_score,
-            "best_combined_score": best_round.combined_score,
-            "total_rounds": evolution.total_mutations,
-            "stopping_reason": evolution.stopping_reason,
-            "tools_called": run_result.get("tools_called", []),
-            "executed_steps": len(run_result["executed_steps"]),
+            "selected_score": selected_eval.score,
+            # Execution
+            "executed_steps": len(run_result.get("executed_steps", [])),
             "final_status": run_result["final_status"],
-            "evolution_table": evolution.summary_table(),
+            "base_failed_checks": base_eval.failed_checks,
+            "mutated_failed_checks": mutated_eval.failed_checks,
         }
+
+
+# ---------------------------------------------------------------------------
+# Reporting helpers
+# ---------------------------------------------------------------------------
+
+def _print_case(result: Dict[str, Any]) -> None:
+    agree_str = "✓ agree" if result["classifiers_agree"] else "✗ DISAGREE"
+    method = result["classification_method"]
+    reasoning = result["llm_reasoning"]
+    print(
+        f"\n[{result['task_id']}]"
+        f"\n  Classification method : {method}"
+        f"\n  LLM    → {result['llm_domain']} / {result['llm_subdomain']}"
+        f"  (confidence {result['llm_confidence']:.2f})"
+        f"\n  Keyword→ {result['keyword_domain']} / {result['keyword_subdomain']}"
+        f"\n  Agreement             : {agree_str}"
+    )
+    if reasoning:
+        print(f"  LLM reasoning         : {reasoning}")
+    print(
+        f"  Blueprint scores      : base={result['base_score']:.2f}"
+        f"  mutated={result['mutated_score']:.2f}"
+        f"  selected={result['selected']}"
+    )
 
 
 def save_json(results: List[Dict[str, Any]], path: str) -> None:
@@ -127,25 +180,67 @@ def save_json(results: List[Dict[str, Any]], path: str) -> None:
 
 
 def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
+    n_tasks = len(results)
+    n_llm = sum(1 for r in results if r["classification_method"] == "llm")
+    n_disagree = sum(1 for r in results if not r["classifiers_agree"])
+
     lines = [
-        "# Stem Agent Benchmark Summary\n",
-        "Two-layer evaluation: structural (40%) + task-level from real tool results (60%).\n",
-        "| Task | Domain | Subdomain | Base Combined | Best Combined | Rounds | Tools Called |",
-        "|------|--------|-----------|:-------------:|:-------------:|:------:|--------------|",
+        "# Stem Agent Benchmark Summary",
+        "",
+        "## Classification method comparison",
+        "",
+        f"Across {n_tasks} benchmark tasks, the LLM classifier was used in "
+        f"**{n_llm}** cases. "
+        f"In **{n_disagree}** case(s) the LLM and keyword classifiers disagreed "
+        f"on domain or subdomain.",
+        "",
+        "| Task | Method | LLM route | Keyword route | Agree | LLM reasoning |",
+        "|---|---|---|---|---|---|",
     ]
+
     for r in results:
-        tools = ", ".join(r["tools_called"]) if r["tools_called"] else "—"
+        agree_mark = "✓" if r["classifiers_agree"] else "✗"
+        llm_route = f"{r['llm_domain']} / {r['llm_subdomain']}"
+        kw_route = f"{r['keyword_domain']} / {r['keyword_subdomain']}"
+        reasoning = r["llm_reasoning"].replace("|", "/") if r["llm_reasoning"] else "—"
         lines.append(
-            f"| {r['task_id']} | {r['domain']} | {r['subdomain']} "
-            f"| {r['base_combined_score']:.2f} | {r['best_combined_score']:.2f} "
-            f"| {r['total_rounds']} | {tools} |"
+            f"| {r['task_id']} | {r['classification_method']} "
+            f"| {llm_route} | {kw_route} | {agree_mark} | {reasoning} |"
         )
 
     lines += [
-        "\n## Per-Task Evolution Tables\n",
+        "",
+        "## Blueprint evolution",
+        "",
+        "| Task | Domain | Subdomain | Base Score | Mutated Score | Selected |"
+        " Executed Steps | Status |",
+        "|---|---|---|---:|---:|---|---:|---|",
     ]
+
     for r in results:
-        lines += [f"### {r['task_id']}\n", "```", r["evolution_table"], "```\n"]
+        lines.append(
+            f"| {r['task_id']} "
+            f"| {r['domain']} "
+            f"| {r['subdomain']} "
+            f"| {r['base_score']:.2f} "
+            f"| {r['mutated_score']:.2f} "
+            f"| {r['selected']} "
+            f"| {r['executed_steps']} "
+            f"| {r['final_status']} |"
+        )
+
+    lines += [
+        "",
+        "## Notes",
+        "",
+        "- The benchmark is deterministic (no LLM execution of blueprints).",
+        "- Blueprint scores measure structural quality: workflow specificity, "
+          "tool relevance, schema completeness, and verification steps.",
+        "- Classification method reflects whether OPENAI_API_KEY was available.",
+        "- Disagreement between LLM and keyword classifiers indicates cases where "
+          "semantic reading changes the routing decision.",
+        "",
+    ]
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -156,15 +251,21 @@ def save_selected_blueprints(results_dir: str) -> None:
     os.makedirs(selected_dir, exist_ok=True)
 
     profiler = DomainProfiler()
-    arch_gen = ArchitectureGenerator()
+    architecture_generator = ArchitectureGenerator()
+    mutator = BlueprintMutator()
+    evaluator = BlueprintEvaluator()
 
     for task_case in BENCHMARK_TASKS:
         profile = profiler.profile(task_case["task"])
-        base_bp = arch_gen.generate(profile)
-        loop = MutationLoop(max_rounds=4, run_tools=bool(task_case["input"].strip()))
-        evolution = loop.run(base_bp, task_input=task_case["input"])
+        base_blueprint = architecture_generator.generate(profile)
+        mutated_blueprint = mutator.mutate(base_blueprint)
+        base_eval = evaluator.evaluate(base_blueprint)
+        mutated_eval = evaluator.evaluate(mutated_blueprint)
+        selected_blueprint = (
+            mutated_blueprint if mutated_eval.score > base_eval.score else base_blueprint
+        )
         save_blueprint(
-            evolution.best_blueprint,
+            selected_blueprint,
             os.path.join(selected_dir, f"{task_case['id']}_selected_blueprint.json"),
         )
 
@@ -173,7 +274,6 @@ def main() -> None:
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
 
-    print("Running benchmark (multi-round evolution + real tools)...")
     benchmark = BenchmarkDemo()
     results = benchmark.run()
 
@@ -181,20 +281,18 @@ def main() -> None:
     save_markdown(results, os.path.join(results_dir, "benchmark_summary.md"))
     save_selected_blueprints(results_dir)
 
-    print(f"\nBenchmark complete — {len(results)} tasks\n")
-    print(f"{'Task':<30} {'Base':>6} {'Best':>6} {'Rounds':>7} {'Tools'}")
-    print("-" * 72)
-    for r in results:
-        tools = ", ".join(r["tools_called"]) if r["tools_called"] else "—"
-        print(
-            f"{r['task_id']:<30} {r['base_combined_score']:>6.2f} "
-            f"{r['best_combined_score']:>6.2f} {r['total_rounds']:>7}   {tools}"
-        )
+    # Summary stats
+    n_llm = sum(1 for r in results if r["classification_method"] == "llm")
+    n_disagree = sum(1 for r in results if not r["classifiers_agree"])
 
-    print("\nSaved:")
-    print("  results/benchmark_summary.json")
-    print("  results/benchmark_summary.md")
-    print("  results/selected_blueprints/")
+    print("\n" + "=" * 60)
+    print("Benchmark complete.")
+    print(f"  Tasks run             : {len(results)}")
+    print(f"  LLM classifier used   : {n_llm}/{len(results)}")
+    print(f"  Classifier disagreed  : {n_disagree}/{len(results)}")
+    print("  Saved JSON  → results/benchmark_summary.json")
+    print("  Saved MD    → results/benchmark_summary.md")
+    print("  Blueprints  → results/selected_blueprints/")
 
 
 if __name__ == "__main__":
