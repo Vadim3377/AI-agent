@@ -136,11 +136,11 @@ def _complete_gemini(messages: Messages, model: str, system: Optional[str]):
         model=model, contents=contents, config=config
     )
     usage = response.usage_metadata
-    return (
-        response.text,
-        (usage.prompt_token_count or 0) if usage else 0,
-        (usage.candidates_token_count or 0) if usage else 0,
-    )
+    if not usage:
+        return response.text, 0, 0
+    # Thinking tokens are billed as output, so count them for cost estimates.
+    output_tokens = (usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0)
+    return response.text, usage.prompt_token_count or 0, output_tokens
 
 
 # OpenAI
