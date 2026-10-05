@@ -98,10 +98,15 @@ A stem agent starts from a general shell and gradually forms a specialised agent
 on the task description. Specialisation is represented as an explicit `AgentBlueprint` -- role,
 workflow, tools, output schema, stopping conditions -- rather than uncontrolled self-modifying code.
 
-The central question: does a better blueprint actually produce a better agent? The answer is yes,
-but the mechanism matters. Blueprint structure alone does not improve output quality. What matters
-is whether the blueprint's architecture enables a real tool feedback loop. The mutated blueprint
-does; the base blueprint does not.
+The central question: does a better blueprint actually produce a better agent? Blueprint
+structure alone does not change output quality; what matters is whether the blueprint's
+architecture enables a real tool feedback loop. The mutated blueprint does; the base blueprint
+does not.
+
+Measured on held-out correctness checks, the gain from that loop is small: +4 to +7 points on
+the 30-task benchmark and none on QuixBugs, at roughly 2.7x the cost per task. Earlier results
+that showed large gains graded fixes with the agent's own smoke tests and overstated correctness
+(see [Benchmarks](#benchmarks)). The limiting factor is the loop's test signal, not the loop.
 
 ---
 
@@ -288,14 +293,21 @@ The runner executes LLM-generated code through pytest, so keep the service authe
 (and/or set `APP_PASSWORD` to enable the built-in password gate) and set a billing budget alert.
 
 ```bash
+# Dedicated runtime identity with only Vertex AI access
+gcloud iam service-accounts create stem-agent-run
+gcloud projects add-iam-policy-binding <project-id> \
+  --member serviceAccount:stem-agent-run@<project-id>.iam.gserviceaccount.com \
+  --role roles/aiplatform.user
+
 gcloud run deploy stem-agent --source . --region europe-west2 \
+  --service-account stem-agent-run@<project-id>.iam.gserviceaccount.com \
   --max-instances 1 --memory 1Gi \
   --set-env-vars LLM_PROVIDER=gemini,GOOGLE_CLOUD_PROJECT=<project-id> \
   --no-allow-unauthenticated
 gcloud run services proxy stem-agent --region europe-west2   # open http://localhost:8080
 ```
 
-Grant the service's runtime service account `roles/aiplatform.user`.
+`.gcloudignore` keeps `.env` and the virtualenv out of the uploaded source.
 
 ---
 
@@ -324,19 +336,22 @@ python task_benchmark.py
 ```
 
 Runs both base and mutated blueprints against 30 hand-curated Python functions across six
-bug categories. Extracts the agent's suggested fix and runs pytest on it -- not the
-ground-truth. Tests whether blueprint mutation produces a specialist that actually fixes bugs.
+bug categories. Each final fix is graded on **held-out checks** (`HELD_OUT_CHECKS`): test
+expressions whose expected outputs come from the case's ground-truth fix, run in a sandboxed
+subprocess (`held_out.py`). The model never sees them. One case (`typ_005`) is excluded
+because its "buggy" code behaves identically to the fix.
 
-Sample output:
+The agent's own `pytest_runner` result is still reported as a *self-check*. For most bug
+types it only asserts a non-None return value, so it overstates correctness: 73% -> 97% on
+self-check versus 93% -> 97% held-out for the same fixes.
+
+Results (held-out pass rate, base -> selected):
 ```
-Metric                          Base   Selected   delta
--------------------------------------------------------
-Fix extracted rate              100%      100%
-First-attempt pass rate          73%       70%    -3%
-Final pytest pass rate           73%       97%   +24%
-Avg revision rounds             0.00      0.43  +0.43
-Avg agent score                0.813     0.977  +0.164
+OpenAI gpt-4.1-mini      27/29 (93%) -> 28/29 (97%)
+Gemini 3.5 Flash         27/29 (93%) -> 29/29 (100%)   p50 8.7 s, ~$0.03 per task
 ```
+
+`python task_benchmark.py --regrade [--provider gemini]` re-grades a saved run without API calls.
 
 Generated files:
 ```
@@ -351,14 +366,27 @@ python quixbugs_benchmark.py
 ```
 
 Validates the debugging agent on 10 real Python bugs from the QuixBugs dataset -- an
-independent external benchmark not seen during development. Runs base and mutated blueprints
-on each bug and reports pytest pass rates.
+independent external benchmark not seen during development. The buggy programs are sent
+without hints, and both blueprints' final fixes are graded on held-out test cases computed
+from the ground-truth fix. Before any LLM call, the benchmark checks that every fixed
+program passes its cases and every buggy one fails at least one.
 
-Sample output:
+Results (Gemini 3.5 Flash, held-out):
 ```
-Base blueprint pass rate   : 0/10 (0%)
-Mutated blueprint pass rate: 7/10 (70%)
+                    Base (single-shot)   Mutated (feedback loop)
+Pass rate           8/10 (80%)           8/10 (80%)
+Cases passed        60/64                60/64
+p50 latency/task    13.9 s               51.1 s
+Cost per task       $0.040               $0.109
 ```
+
+Both failures are convention mismatches rather than unfixed bugs: `max_sublist_sum` returns
+the best non-empty sublist (QuixBugs allows the empty one), and `wrap` strips the leading
+space QuixBugs keeps.
+
+The earlier OpenAI result (0/10 -> 5/10, kept in `results/quixbugs_benchmark.md`) is
+**outdated**: the base fix was never tested, three tasks had no real bug, one ground-truth
+fix was wrong, and the buggy code carried hint comments.
 
 Generated files:
 ```
@@ -547,7 +575,7 @@ Documentation loop (up to 2 rounds):
 
 The base blueprint's passive steps (`run_tests_if_available`) do not trigger the loops.
 The mutated blueprint's active steps (`verify_fix_against_generated_tests`,
-`verify_docstring_coverage`) do. This is the mechanism behind the benchmark improvements.
+`verify_docstring_coverage`) do. This is the only behavioural difference between the two blueprints.
 
 ### `StemShell`
 
@@ -564,11 +592,13 @@ Benchmark                               Before    After
 -------                                 ------    -----
 Blueprint structural score               0.86     1.00
 Deterministic vs LLM runner              0.60     0.95
-30-task final pytest pass rate           73%      97%
-30-task avg agent score                 0.813    0.977
-QuixBugs external pass rate (mutated)    --       50-70%
+30-task held-out pass rate (OpenAI)      93%      97%
+30-task held-out pass rate (Gemini)      93%     100%
+QuixBugs held-out pass rate (Gemini)     80%      80%
 Doc quality coverage (mutated)           --       100%
 ```
+
+"Before" is the base blueprint, "after" the selected/mutated one.
 
 ---
 
@@ -592,6 +622,9 @@ Doc quality coverage (mutated)           --       100%
 |-- agent_runner.py            Deterministic runner with real tool dispatch
 |-- tools.py                   Real executable tools (pytest, AST, regex)
 |-- llm_agent_runner.py        LLM-backed runner with feedback loops (debugging + documentation)
+|-- llm_backend.py             Provider-agnostic LLM calls (OpenAI, Gemini on Vertex AI), usage tracking
+|-- held_out.py                Sandboxed held-out grading for debugging benchmarks
+|-- Dockerfile                 Container for Cloud Run
 |-- stem_shell.py              Coordinator: grow_initial_blueprint, grow_and_evaluate
 |-- requirements.txt
 |-- .env                       Not committed -- add OPENAI_API_KEY here
@@ -625,6 +658,10 @@ directly into the evaluator's task-level score.
 **Mutation can lose.** The `MutationLoop` stops when improvement falls below 3%. The base
 blueprint is kept when it already scores well on real tool output.
 
-**Failures are reported, not hidden.** The task benchmark reports cases where the agent fix
-still fails pytest. Type/scope bugs reach 80% final pass rate -- not 100%. Three QuixBugs
-tasks hit MAX_REVISION_ROUNDS without passing. These are documented rather than excluded.
+**Failures are reported, not hidden.** Both debugging benchmarks list every case that fails
+held-out grading, and the task benchmark lists the case excluded for having no observable bug.
+
+**Held-out grading, not self-grading.** The agent's in-loop `pytest_runner` generates generic
+smoke tests, so it can pass fixes that are still wrong, and in the revision loop it can push the
+model toward defensive code that survives those tests rather than correct code. Benchmarks
+therefore grade final fixes only on checks the model never sees.

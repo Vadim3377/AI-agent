@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
+import held_out
 import llm_backend
 from tools import pytest_runner, static_checker
 from domain_profiler import DomainProfiler
@@ -134,6 +135,54 @@ DATASET: List[BugCase] = [
             "def is_positive(x):\n    return x > 0\n\ndef check(x):\n    if is_positive(x) == 1:\n        return 'yes'\n    return 'no'",
             "def is_positive(x):\n    return x > 0\n\ndef check(x):\n    if is_positive(x):\n        return 'yes'\n    return 'no'", []),
 ]
+# Held-out checks: expressions evaluated against the agent's fix and the
+# ground-truth fix (see held_out.py). The model never sees these. Stateful
+# checks are written as one tuple expression so they run in order.
+HELD_OUT_CHECKS: Dict[str, List[str]] = {
+    "op_001": ["add(2, 3)", "add(-4, 10)", "add(0, 0)", "add(2.5, 0.5)"],
+    "op_002": ["multiply(2, 3)", "multiply(-4, 5)", "multiply(7, 0)", "multiply(1.5, 4)"],
+    "op_003": ["subtract(10, 3)", "subtract(3, 10)", "subtract(0, 5)", "subtract(-2, -2)"],
+    "op_004": ["total_sum(1, 2, 3)", "total_sum(10, -5, 2)", "total_sum(0, 0, 0)"],
+    "op_005": ["sum_all([1, 2, 3])", "sum_all([])", "sum_all([-1, 5, 10])"],
+    "op_006": ["plus_one(0)", "plus_one(41)", "plus_one(-1)"],
+    "op_007": ["sum_pair(2, 3)", "sum_pair(-1, 1)", "sum_pair(100, 23)"],
+    "op_008": ["total(1, 2, 3)", "total(10, 20, 30)", "total(-1, -2, -3)"],
+    "obo_001": ["count_up_to(3)", "count_up_to(1)", "count_up_to(0)", "count_up_to(5)"],
+    "obo_002": ["first_n([1, 2, 3, 4], 2)", "first_n(['a', 'b', 'c'], 3)", "first_n([9, 8], 0)"],
+    "obo_003": ["repeat('ab', 3)", "repeat('x', 0)", "repeat('-', 1)"],
+    "ret_001": ["double(2)", "double(-3)", "double(0)"],
+    "ret_002": ["safe_div(6, 3)", "safe_div(1, 4)", "safe_div(5, 0) is not None"],
+    "ret_003": ["make_list(3)", "make_list(0)", "make_list(1)"],
+    "ret_004": ["square(3)", "square(-4)", "square(0)"],
+    "ret_005": ["negate(5)", "negate(-2)", "negate(0)"],
+    "cmp_001": ["is_zero(0)", "is_zero(0.0)", "is_zero(5)", "is_zero(-1)"],
+    "cmp_002": ["is_adult(18)", "is_adult(17)", "is_adult(30)"],
+    "cmp_003": ["check_flag(True)", "check_flag(False)", "check_flag('x')", "check_flag(0)", "check_flag([1])"],
+    "log_001": ["clamp(5, 0, 10)", "clamp(-3, 0, 10)", "clamp(15, 0, 10)", "clamp(0, 0, 10)"],
+    "log_002": ["is_even(4)", "is_even(7)", "is_even(0)", "is_even(-3)"],
+    "log_003": ["maximum(3, 7)", "maximum(9, 2)", "maximum(-1, -5)", "maximum(4, 4)"],
+    "log_004": ["factorial(0)", "factorial(1)", "factorial(5)", "factorial(6)"],
+    "log_005": ["fib(0)", "fib(1)", "fib(2)", "fib(3)", "fib(10)"],
+    "log_006": ["absolute(-5)", "absolute(3)", "absolute(0)"],
+    "typ_001": ["add_nums(2, 3)", "add_nums(-1, 1)", "add_nums(10, 5)"],
+    "typ_002": ["(increment(), increment(), counter)[-1]"],
+    "typ_003": ["average([1, 2])", "average([1, 2, 4])", "average([5])"],
+    "typ_004": ["(append_to(1), append_to(2))[-1]", "append_to(3, [1, 2])"],
+    "typ_005": ["check(5)", "check(-1)", "check(0)"],
+}
+
+
+def held_out_expected() -> Dict[str, Dict[str, Any]]:
+    """Expected outputs per case, and whether the bug is observable at all."""
+    return {
+        case.id: held_out.check_task(case.buggy_code, case.fixed_code, HELD_OUT_CHECKS[case.id])
+        for case in DATASET
+    }
+
+
+def grade_held_out(case_id: str, fix: Optional[str], expected: Dict[str, Dict[str, Any]]) -> bool:
+    checks = HELD_OUT_CHECKS[case_id]
+    return held_out.grade(fix or "", checks, expected[case_id]["expected"]) == len(checks)
 # Fix extraction from LLM output
 def extract_fix(parsed_output: Optional[Dict]) -> Optional[str]:
     if not parsed_output or not isinstance(parsed_output, dict):
@@ -423,6 +472,29 @@ def run_agent_benchmark(use_llm: bool = True) -> Dict[str, Any]:
     }
 
 
+def add_held_out_grading(report: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Grade each blueprint's final fix on the held-out checks and add the results
+    to the report. Cases whose buggy code passes every check are excluded.
+    """
+    expected = held_out_expected()
+    excluded = sorted(cid for cid, e in expected.items() if not e["bug_observable"])
+    summary: Dict[str, Any] = {"excluded_no_observable_bug": excluded}
+    for name in ("base", "selected"):
+        passed = 0
+        graded = 0
+        for case in report["case_results"][name]:
+            ok = grade_held_out(case["id"], case.get("agent_fix"), expected)
+            case["held_out_passed"] = ok
+            if case["id"] not in excluded:
+                graded += 1
+                passed += ok
+        summary[name] = {"passed": passed, "graded": graded,
+                         "pass_rate": round(passed / graded, 2) if graded else 0.0}
+    report["held_out"] = summary
+    return report
+
+
 def save_markdown(report: Dict, path: str) -> None:
     mode = report["mode"]
     base = report["base"]
@@ -439,11 +511,19 @@ def save_markdown(report: Dict, path: str) -> None:
         "| Metric | Base Blueprint | Selected Blueprint | delta |",
         "|--------|:--------------:|:-----------------:|:---:|",
     ]
+    held = report.get("held_out")
+    if mode == "llm" and held:
+        hb, hs = held["base"], held["selected"]
+        lines.append(
+            f"| **Held-out pass rate (correctness)** | **{hb['passed']}/{hb['graded']} ({hb['pass_rate']:.0%})** "
+            f"| **{hs['passed']}/{hs['graded']} ({hs['pass_rate']:.0%})** "
+            f"| **{hs['pass_rate'] - hb['pass_rate']:+.0%}** |"
+        )
     if mode == "llm":
         lines += [
             f"| Fix extracted rate | {base['fix_extracted_rate']*100:.0f}% | {sel['fix_extracted_rate']*100:.0f}% | -- |",
-            f"| First-attempt pass rate | {base['first_attempt_pass_rate']*100:.0f}% | {sel['first_attempt_pass_rate']*100:.0f}% | **{(sel['first_attempt_pass_rate']-base['first_attempt_pass_rate'])*100:+.0f}%** |",
-            f"| Final pytest pass rate | {base['pytest_pass_rate']*100:.0f}% | {sel['pytest_pass_rate']*100:.0f}% | **{imp['pytest_pass_rate_delta']:+.0%}** |",
+            f"| First-attempt self-check pass rate | {base['first_attempt_pass_rate']*100:.0f}% | {sel['first_attempt_pass_rate']*100:.0f}% | **{(sel['first_attempt_pass_rate']-base['first_attempt_pass_rate'])*100:+.0f}%** |",
+            f"| Final self-check (pytest_runner smoke tests) | {base['pytest_pass_rate']*100:.0f}% | {sel['pytest_pass_rate']*100:.0f}% | **{imp['pytest_pass_rate_delta']:+.0%}** |",
             f"| Avg revision rounds | {base['avg_rounds_taken']:.2f} | {sel['avg_rounds_taken']:.2f} | **{sel['avg_rounds_taken']-base['avg_rounds_taken']:+.2f}** |",
         ]
     lines += [
@@ -473,6 +553,23 @@ def save_markdown(report: Dict, path: str) -> None:
         if imp["cases_failed_both"]:
             lines += ["\n## Failed Both Blueprints\n", ", ".join(imp["cases_failed_both"]),
                       "\n*(Agent extracted a fix but pytest still failed -- genuinely hard cases.)*"]
+        if held:
+            failed = {
+                name: [c["id"] for c in report["case_results"][name]
+                       if not c.get("held_out_passed") and c["id"] not in held["excluded_no_observable_bug"]]
+                for name in ("base", "selected")
+            }
+            lines += [
+                "\n## Held-out Grading\n",
+                "Each final fix is run on held-out checks whose expected outputs come from the",
+                "case's ground-truth fix; the model never sees them. The self-check rows use",
+                "pytest_runner, which for most bug types only asserts a non-None return value,",
+                "so they overstate correctness.\n",
+                f"- Failed held-out (base): {', '.join(failed['base']) or 'none'}",
+                f"- Failed held-out (selected): {', '.join(failed['selected']) or 'none'}",
+                f"- Excluded (buggy code passes every check, no observable bug): "
+                f"{', '.join(held['excluded_no_observable_bug']) or 'none'}",
+            ]
     else:
         lines += ["\n---\n",
                   "*Static-only mode. Re-run with an LLM provider configured to get fix-quality scores.*"]
@@ -531,6 +628,8 @@ def main() -> None:
                         help="Static analysis only, no API calls.")
     parser.add_argument("--debug-case", type=str, default=None,
                         help="Run and print full detail for one case ID (e.g. op_001).")
+    parser.add_argument("--regrade", action="store_true",
+                        help="Re-grade the fixes saved in --output on held-out checks; no API calls.")
     llm_backend.add_cli_args(parser)
     args = parser.parse_args()
     llm_backend.apply_cli_args(args)
@@ -543,7 +642,13 @@ def main() -> None:
         _debug_one_case(args.debug_case, use_llm=not args.no_llm)
         return
 
-    report = run_agent_benchmark(use_llm=not args.no_llm)
+    if args.regrade:
+        with open(args.output, encoding="utf-8") as f:
+            report = json.load(f)
+    else:
+        report = run_agent_benchmark(use_llm=not args.no_llm)
+    if report["mode"] == "llm":
+        add_held_out_grading(report)
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, default=str)
@@ -556,6 +661,8 @@ def main() -> None:
     if report["mode"] == "llm":
         print(f"{'Metric':<36} {'Base':>7} {'Selected':>9} {'delta':>7}")
         print("-" * 61)
+        hb, hs = report["held_out"]["base"], report["held_out"]["selected"]
+        print(f"{'Held-out pass rate (correctness)':<36} {hb['pass_rate']*100:>6.0f}% {hs['pass_rate']*100:>8.0f}%  {(hs['pass_rate']-hb['pass_rate'])*100:>+.0f}%")
         print(f"{'Fix extracted rate':<36} {base['fix_extracted_rate']*100:>6.0f}% {sel['fix_extracted_rate']*100:>8.0f}%")
         print(f"{'First-attempt pass rate':<36} {base['first_attempt_pass_rate']*100:>6.0f}% {sel['first_attempt_pass_rate']*100:>8.0f}%  {(sel['first_attempt_pass_rate']-base['first_attempt_pass_rate'])*100:>+.0f}%")
         print(f"{'Final pytest pass rate':<36} {base['pytest_pass_rate']*100:>6.0f}% {sel['pytest_pass_rate']*100:>8.0f}%  {imp['pytest_pass_rate_delta']*100:>+.0f}%")

@@ -1,5 +1,11 @@
 # QuixBugs External Validation Benchmark
 
+> **Outdated.** This OpenAI run predates the benchmark fix: the base blueprint's fix was
+> never tested (so base always scored 0), several tasks had no real bug or a wrong
+> ground-truth fix, the buggy code included hint comments, and pass/fail came from
+> generic smoke tests rather than held-out cases. See `quixbugs_benchmark_gemini.md`
+> for results under the corrected benchmark.
+
 Validates the debugging agent on 10 real Python bugs from the QuixBugs dataset
 (https://github.com/jkoppel/QuixBugs). Bugs were not seen during development.
 
