@@ -319,6 +319,33 @@ QUIXBUGS_TASKS = [
     },
 ]
 
+# Visible tests (bug report), used only when a benchmark gives the agent tests.
+# Inputs differ from the held-out cases; expected values come from the fixed code.
+VISIBLE_CASES: Dict[str, List[List[Any]]] = {
+    "bitcount": [[5], [16], [255]],
+    "find_first_in_sorted": [[[1, 2, 2, 3], 2], [[1, 2, 3], 4]],
+    "flatten": [[[1, [2, [3]]]], [[[["x"]], "y"]]],
+    "gcd": [[12, 18], [7, 5]],
+    "is_valid_parenthesization": [["(())"], ["((())"]],
+    "max_sublist_sum": [[[-1, -2]], [[1, -3, 2]], [[2, -1, 3]]],
+    "next_palindrome": [[[1, 2, 1]], [[9, 9, 9, 9]]],
+    "pascal": [[6]],
+    "possible_change": [[[2, 3], 7], [[5], 3]],
+    "wrap": [["one two three four five", 9], ["xx yy", 4]],
+}
+
+
+def visible_tests(task: Dict[str, Any]) -> str:
+    """Pytest source asserting the fixed program's outputs on VISIBLE_CASES."""
+    exprs = [f"{task['id']}(*{args!r})" for args in VISIBLE_CASES[task["id"]]]
+    expected = held_out.expected_outputs(task["fixed"], exprs)
+    wrap = "list({})" if task["id"] == "flatten" else "{}"
+    return "\n\n".join(
+        f"def test_{task['id']}_{i}():\n    assert {wrap.format(expr)} == {value!r}"
+        for i, (expr, (_, value)) in enumerate(zip(exprs, expected), 1)
+    )
+
+
 # Held-out grading
 
 def _case_exprs(task: Dict[str, Any]) -> List[str]:

@@ -13,6 +13,7 @@ Environment:
     GEMINI_MODEL           default Gemini model ID (check the Vertex AI docs)
     GOOGLE_CLOUD_PROJECT   GCP project for Vertex AI
     GOOGLE_CLOUD_LOCATION  Vertex AI region (default europe-west2)
+    GEMINI_THINKING_LEVEL  optional thinking level, e.g. "minimal" (off) or "high"
     LLM_PRICE_IN_PER_M     optional USD per 1M input tokens, for cost estimates
     LLM_PRICE_OUT_PER_M    optional USD per 1M output tokens
 """
@@ -127,9 +128,12 @@ def _complete_gemini(messages: Messages, model: str, system: Optional[str]):
             for m in messages
         ]
 
+    # GEMINI_THINKING_LEVEL (e.g. "minimal" to turn thinking off) overrides the model default.
+    level = os.getenv("GEMINI_THINKING_LEVEL")
     # No tools are passed, so disable automatic function calling (silences an SDK warning).
     config = types.GenerateContentConfig(
         system_instruction=system,
+        thinking_config=types.ThinkingConfig(thinking_level=level) if level else None,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
     response = _gemini_client().models.generate_content(
