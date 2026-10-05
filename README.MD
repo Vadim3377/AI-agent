@@ -416,6 +416,32 @@ Cost per task       $0.037               $0.049
 With the failing tests in the prompt, the model fixes every task single-shot; the loop
 revised once (`roman_to_int`) and adds cost without adding correctness at this difficulty.
 
+### Thinking x feedback-loop experiment (requires Gemini)
+
+```bash
+LLM_PRICE_IN_PER_M=1.50 LLM_PRICE_OUT_PER_M=9.90 python thinking_experiment.py
+```
+
+2x2 on 22 tasks (12 visible-test + 10 QuixBugs, all with visible failing tests): Gemini
+thinking on/off x single-shot/test loop, graded on hidden held-out checks. The success
+criteria were committed before the run (see the module docstring).
+
+Results (Gemini 3.5 Flash; two independent runs, second in brackets):
+```
+Cell                         Held-out pass     p50 latency/task    Cost/task
+Single-shot, thinking on     21/22  [21/22]    12.5 s  [13.0 s]    $0.035  [$0.035]
+Test loop,   thinking on     21/22  [22/22]    18.2 s  [16.7 s]    $0.048  [$0.044]
+Single-shot, thinking off    22/22  [22/22]     3.0 s  [ 3.0 s]    $0.007  [$0.007]
+Test loop,   thinking off    22/22  [22/22]     4.9 s  [ 5.0 s]    $0.009  [$0.009]
+```
+
+The pre-registered headline holds: the loop without thinking matches single-shot with
+thinking at 25% of the cost and 40% of the p50 latency. But the saving comes from turning
+thinking off, not from the loop: single-shot without thinking is equally accurate and
+cheaper still, so the loop recovers nothing (the supporting check fails). At this task
+difficulty the cheapest accurate configuration is single-shot with thinking off. The one
+thinking-on miss (`parse_duration`) is a reply with no extractable function, not a wrong fix.
+
 ### Documentation feedback loop benchmark (requires API key)
 
 ```bash
@@ -618,6 +644,7 @@ Deterministic vs LLM runner              0.60     0.95
 30-task held-out pass rate (Gemini)      93%     100%
 QuixBugs held-out pass rate (Gemini)     80%      80%
 Visible-test benchmark (Gemini)         100%     100%
+22 tasks, single/thinking-on vs loop/off  95%     100%   (cost 25%, p50 latency 40%)
 Doc quality coverage (mutated)           --       100%
 ```
 
