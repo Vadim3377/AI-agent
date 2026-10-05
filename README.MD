@@ -60,6 +60,19 @@ Without an API key: the keyword fallback classifier is used, the deterministic r
 fully, and `benchmark_demo.py` runs end-to-end. Only `--use-llm`, `quixbugs_benchmark.py`,
 and `doc_benchmark.py` require an API key.
 
+To use Gemini on Vertex AI instead of OpenAI (all LLM calls go through `llm_backend.py`):
+
+```
+LLM_PROVIDER=gemini
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=europe-west2   # default
+GEMINI_MODEL=gemini-3.5-flash        # check the current Vertex AI model list
+```
+
+Locally, authenticate with `gcloud auth application-default login`; on Cloud Run the service
+account authenticates, so no key is needed. Set `LLM_PRICE_IN_PER_M` / `LLM_PRICE_OUT_PER_M`
+(USD per 1M tokens) to get cost-per-task in benchmark summaries.
+
 Your `.gitignore` should include:
 
 ```
@@ -250,7 +263,8 @@ python main.py --run-blueprint configs/selected_debugging.json \
 --run-blueprint PATH   Execute an existing saved blueprint
 --run-output PATH      Where to save the runner output JSON
 --use-llm              Use the LLM-backed runner instead of the deterministic runner
---model TEXT           OpenAI model for the LLM runner (default: gpt-4.1-mini)
+--provider NAME        openai | gemini (default: $LLM_PROVIDER or openai)
+--model TEXT           Model for the LLM runner (default: gpt-4.1-mini / $GEMINI_MODEL)
 ```
 
 ---
@@ -267,6 +281,21 @@ The frontend shows:
 - Evolution table with structural and task-level scores per round
 - Base vs selected blueprint comparison
 - Runner output with tool results and feedback loop metrics
+
+### Deploy to Cloud Run
+
+The runner executes LLM-generated code through pytest, so keep the service authenticated
+(and/or set `APP_PASSWORD` to enable the built-in password gate) and set a billing budget alert.
+
+```bash
+gcloud run deploy stem-agent --source . --region europe-west2 \
+  --max-instances 1 --memory 1Gi \
+  --set-env-vars LLM_PROVIDER=gemini,GOOGLE_CLOUD_PROJECT=<project-id> \
+  --no-allow-unauthenticated
+gcloud run services proxy stem-agent --region europe-west2   # open http://localhost:8080
+```
+
+Grant the service's runtime service account `roles/aiplatform.user`.
 
 ---
 

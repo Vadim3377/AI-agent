@@ -7,12 +7,15 @@ evaluated on its own proposed fix using pytest; the ground-truth fix is used
 only as reference data, not as model input.
 """
 
+import argparse
 import json
 import os
 import textwrap
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
+
+import llm_backend
 
 load_dotenv()
 # 10 QuixBugs Python tasks (buggy version + ground-truth fix)
@@ -299,7 +302,8 @@ def _functional_match(agent_fix: str, ground_truth: str) -> bool:
     return normalise(agent_fix) == normalise(ground_truth)
 
 
-def run_quixbugs_benchmark() -> List[Dict[str, Any]]:
+def run_quixbugs_benchmark() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Run every task on both blueprints; return per-task results and LLM usage summary."""
     from architecture_generator import ArchitectureGenerator
     from blueprint_mutator import BlueprintMutator
     from domain_profiler import DomainProfiler
@@ -348,16 +352,20 @@ def run_quixbugs_benchmark() -> List[Dict[str, Any]]:
             "mutated_pytest_passed": mutated_pytest_passed,
             "mutated_first_attempt_passed": first_attempt,
             "rounds_taken": rounds,
+            "base_latency_s": base_result["usage"]["latency_s"],
+            "mutated_latency_s": mutated_result["usage"]["latency_s"],
         })
 
-    return results
+    return results, llm_backend.summarise_runs(runner.run_log)
 # Reporting
 def save_json(results: List[Dict[str, Any]], path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
 
-def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
+def save_markdown(
+    results: List[Dict[str, Any]], path: str, usage: Optional[Dict[str, Any]] = None
+) -> None:
     n = len(results)
     base_pass = sum(1 for r in results if r["base_pytest_passed"])
     mutated_pass = sum(1 for r in results if r["mutated_pytest_passed"])
@@ -389,6 +397,16 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
             f" | {base_mark} | {mutated_mark} | {r['rounds_taken']} |"
         )
 
+    if usage:
+        lines += [
+            "",
+            "## LLM Usage (per task = one runner.run, incl. revision rounds)",
+            "",
+            "```",
+            llm_backend.format_usage(usage),
+            "```",
+        ]
+
     lines += [
         "",
         "## Notes",
@@ -407,21 +425,29 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
 
 
 def main() -> None:
-    if not os.getenv("OPENAI_API_KEY"):
-        print("ERROR: OPENAI_API_KEY is not set.")
+    parser = argparse.ArgumentParser(description="QuixBugs external validation benchmark")
+    llm_backend.add_cli_args(parser)
+    args = parser.parse_args()
+    llm_backend.apply_cli_args(args)
+
+    if not llm_backend.is_configured(args.provider):
+        print(f"ERROR: provider {args.provider!r} is not configured "
+              "(set OPENAI_API_KEY, or GOOGLE_CLOUD_PROJECT for gemini).")
         return
 
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
+    json_path = llm_backend.results_path(os.path.join(results_dir, "quixbugs_benchmark.json"), args.provider)
+    md_path = llm_backend.results_path(os.path.join(results_dir, "quixbugs_benchmark.md"), args.provider)
 
     print("Running QuixBugs external validation benchmark...")
     print(f"Tasks: {len(QUIXBUGS_TASKS)}")
     print()
 
-    results = run_quixbugs_benchmark()
+    results, usage = run_quixbugs_benchmark()
 
-    save_json(results, os.path.join(results_dir, "quixbugs_benchmark.json"))
-    save_markdown(results, os.path.join(results_dir, "quixbugs_benchmark.md"))
+    save_json(results, json_path)
+    save_markdown(results, md_path, usage)
 
     n = len(results)
     base_pass = sum(1 for r in results if r["base_pytest_passed"])
@@ -431,8 +457,10 @@ def main() -> None:
     print("=" * 50)
     print(f"Base blueprint pass rate   : {base_pass}/{n} ({base_pass/n:.0%})")
     print(f"Mutated blueprint pass rate: {mutated_pass}/{n} ({mutated_pass/n:.0%})")
-    print("Saved -> results/quixbugs_benchmark.json")
-    print("Saved -> results/quixbugs_benchmark.md")
+    print()
+    print(llm_backend.format_usage(usage))
+    print(f"Saved -> {json_path}")
+    print(f"Saved -> {md_path}")
 
 
 if __name__ == "__main__":

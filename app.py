@@ -8,6 +8,7 @@ LLM or the keyword fallback routed the task, and read the LLM's one-sentence
 justification for its routing decision.
 """
 
+import hmac
 import json
 import os
 from typing import Any, Dict
@@ -22,6 +23,8 @@ from domain_profiler import DomainProfiler
 from models import AgentBlueprint, EvaluationResult
 from mutation_loop import MutationLoop
 from dotenv import load_dotenv
+
+import llm_backend
 
 try:
     from llm_agent_runner import LLMAgentRunner
@@ -278,10 +281,29 @@ def display_classification_info(pipeline_result: Dict[str, Any]) -> None:
 
 # Main Streamlit app
 
+def _password_ok() -> bool:
+    """
+    Gate the app behind APP_PASSWORD when it is set. The runner executes
+    LLM-generated code through pytest, so a public deployment must not be open.
+    """
+    expected = os.getenv("APP_PASSWORD")
+    if not expected or st.session_state.get("authenticated"):
+        return True
+    password = st.text_input("Password", type="password")
+    if password and hmac.compare_digest(password, expected):
+        st.session_state["authenticated"] = True
+        st.rerun()
+    elif password:
+        st.error("Incorrect password.")
+    return False
+
+
 def main() -> None:
     load_dotenv()
 
     st.set_page_config(page_title="Stem Agent Demo", layout="wide")
+    if not _password_ok():
+        return
     st.title("Stem Agent Demo")
     st.write(
         "This demo runs the stem-agent pipeline: classify the task, profile the domain, "
@@ -332,11 +354,19 @@ def main() -> None:
     task_input = st.text_area("Concrete task input", value=default_input, height=160)
 
     runner_type = st.sidebar.radio("Runner", ["Deterministic", "LLM-backed"])
+    providers = list(llm_backend.PROVIDERS)
+    provider = st.sidebar.selectbox(
+        "LLM provider",
+        providers,
+        index=providers.index(llm_backend.default_provider()),
+    )
     model = st.sidebar.text_input(
-        "OpenAI model",
-        value="gpt-4.1-mini",
+        "Model",
+        value=llm_backend.default_model(provider),
         disabled=(runner_type != "LLM-backed"),
     )
+    # The domain classifier reads the provider from the environment.
+    os.environ["LLM_PROVIDER"] = provider
 
     if st.button("Run Stem Agent Pipeline", type="primary"):
         if not task_prompt.strip():
@@ -413,11 +443,14 @@ def main() -> None:
                     "exists and dependencies are installed."
                 )
                 return
-            if not os.getenv("OPENAI_API_KEY"):
-                st.error("OPENAI_API_KEY is missing. Add it to .env.")
+            if not llm_backend.is_configured(provider):
+                st.error(
+                    "OPENAI_API_KEY is missing." if provider == "openai"
+                    else "GOOGLE_CLOUD_PROJECT is missing."
+                )
                 return
             with st.spinner("Running selected blueprint with LLM-backed runner..."):
-                runner = LLMAgentRunner(model=model)
+                runner = LLMAgentRunner(model=model, provider=provider)
                 run_result = runner.run(selected_blueprint, task_input)
         else:
             with st.spinner("Running selected blueprint deterministically..."):

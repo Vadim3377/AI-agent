@@ -1,0 +1,11 @@
+.env
+.git/
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+Report.pdf
+results/*.json

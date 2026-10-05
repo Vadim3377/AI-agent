@@ -7,6 +7,7 @@ from stem_shell import StemShell
 from models import save_blueprint, load_blueprint
 from agent_runner import AgentRunner, save_run_result
 from llm_agent_runner import LLMAgentRunner
+import llm_backend
 
 load_dotenv()
 
@@ -60,16 +61,24 @@ def main() -> None:
     parser.add_argument(
         "--use-llm",
         action="store_true",
-        help="Use the OpenAI-backed LLM runner instead of the deterministic runner.",
+        help="Use the LLM-backed runner instead of the deterministic runner.",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=llm_backend.PROVIDERS,
+        default=llm_backend.default_provider(),
+        help="LLM provider for the runner and classifier (default: $LLM_PROVIDER or openai).",
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4.1-mini",
-        help="OpenAI model to use for the LLM runner.",
+        default=None,
+        help="Model ID for the LLM runner (default depends on --provider).",
     )
 
     args = parser.parse_args()
+    # The domain classifier reads the provider from the environment.
+    os.environ["LLM_PROVIDER"] = args.provider
     # Run an existing blueprint
     if args.run_blueprint:
         if not args.input:
@@ -82,7 +91,7 @@ def main() -> None:
         blueprint = load_blueprint(args.run_blueprint)
 
         if args.use_llm:
-            runner = LLMAgentRunner(model=args.model)
+            runner = LLMAgentRunner(model=args.model, provider=args.provider)
         else:
             runner = AgentRunner()
 
@@ -95,7 +104,8 @@ def main() -> None:
         print(f"Domain      : {blueprint.domain_profile.domain}")
         print(f"Subdomain   : {blueprint.domain_profile.subdomain}")
         if args.use_llm:
-            print(f"Model       : {args.model}")
+            print(f"Model       : {runner.provider} / {runner.model}")
+            print(f"Latency     : {result['usage']['latency_s']}s")
         else:
             print(f"Steps run   : {len(result.get('executed_steps', []))}")
         print(f"Saved to    : {args.run_output}")

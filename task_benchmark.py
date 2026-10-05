@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
+import llm_backend
 from tools import pytest_runner, static_checker
 from domain_profiler import DomainProfiler
 from architecture_generator import ArchitectureGenerator
@@ -380,6 +381,7 @@ def run_agent_benchmark(use_llm: bool = True) -> Dict[str, Any]:
 
     return {
         "mode": "llm" if use_llm else "static_only",
+        "llm_usage": llm_backend.summarise_runs(llm_runner.run_log) if use_llm else None,
         "base_blueprint": base_blueprint.name,
         "selected_blueprint": selected_blueprint.name,
         "evolution_rounds": evolution.total_mutations,
@@ -448,6 +450,11 @@ def save_markdown(report: Dict, path: str) -> None:
         f"| Static signal score | {base['avg_signal_score']*100:.0f}% | {sel['avg_signal_score']*100:.0f}% | -- |",
         f"| **Avg agent score** | **{base['avg_agent_score']:.3f}** | **{sel['avg_agent_score']:.3f}** | **{imp['avg_agent_score_delta']:+.3f}** |",
         "",
+    ]
+    if report.get("llm_usage"):
+        lines += ["## LLM Usage (per task = one runner.run, incl. revision rounds)\n",
+                  "```", llm_backend.format_usage(report["llm_usage"]), "```", ""]
+    lines += [
         "## Bug Type Breakdown (Selected Blueprint)\n",
         "| Bug Type | Cases | Fix Extracted | pytest Pass | Avg Score |",
         "|----------|:-----:|:-------------:|:-----------:|:---------:|",
@@ -468,7 +475,7 @@ def save_markdown(report: Dict, path: str) -> None:
                       "\n*(Agent extracted a fix but pytest still failed -- genuinely hard cases.)*"]
     else:
         lines += ["\n---\n",
-                  "*Static-only mode. Re-run with OPENAI_API_KEY to get fix-quality scores.*"]
+                  "*Static-only mode. Re-run with an LLM provider configured to get fix-quality scores.*"]
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -516,6 +523,7 @@ def _debug_one_case(case_id: str, use_llm: bool = True) -> None:
 
 
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="results/task_benchmark.json")
     parser.add_argument("--summary", default="results/task_benchmark.md")
@@ -523,7 +531,11 @@ def main() -> None:
                         help="Static analysis only, no API calls.")
     parser.add_argument("--debug-case", type=str, default=None,
                         help="Run and print full detail for one case ID (e.g. op_001).")
+    llm_backend.add_cli_args(parser)
     args = parser.parse_args()
+    llm_backend.apply_cli_args(args)
+    args.output = llm_backend.results_path(args.output, args.provider)
+    args.summary = llm_backend.results_path(args.summary, args.provider)
 
     os.makedirs("results", exist_ok=True)
 
@@ -549,6 +561,8 @@ def main() -> None:
         print(f"{'Final pytest pass rate':<36} {base['pytest_pass_rate']*100:>6.0f}% {sel['pytest_pass_rate']*100:>8.0f}%  {imp['pytest_pass_rate_delta']*100:>+.0f}%")
         print(f"{'Avg revision rounds taken':<36} {base['avg_rounds_taken']:>7.2f} {sel['avg_rounds_taken']:>9.2f}  {sel['avg_rounds_taken']-base['avg_rounds_taken']:>+.2f}")
     print(f"{'Avg agent score':<36} {base['avg_agent_score']:>7.3f} {sel['avg_agent_score']:>9.3f}  {imp['avg_agent_score_delta']:>+.3f}")
+    if report.get("llm_usage"):
+        print("\n" + llm_backend.format_usage(report["llm_usage"]))
     print(f"\nSaved: {args.output}  {args.summary}")
 
 

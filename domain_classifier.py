@@ -1,16 +1,15 @@
 """
 Classify task prompts into supported stem-agent domains.
 
-When OPENAI_API_KEY is available, the classifier asks an LLM to route the raw
-task prompt into a domain and subdomain with a short justification. Without an
-API key, it uses a deterministic keyword fallback. The fallback keeps the
+When an LLM provider is configured (see llm_backend), the classifier asks an
+LLM to route the raw task prompt into a domain and subdomain with a short
+justification. Without one, it uses a deterministic keyword fallback. The fallback keeps the
 pipeline runnable and provides a baseline for comparison.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -72,22 +71,21 @@ below 0.5.
 def _classify_with_llm(prompt: str) -> Optional[ClassificationResult]:
     """
     Ask the LLM to classify the task prompt.
-    Returns None if the API key is missing or the call fails.
+    Returns None if no LLM provider is configured or the call fails.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    import llm_backend
+
+    provider = llm_backend.default_provider()
+    if not llm_backend.is_configured(provider):
         return None
 
     try:
-        from openai import OpenAI
-        client = OpenAI()
-
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            instructions=_CLASSIFICATION_SYSTEM_PROMPT,
-            input=f"Task description:\n{prompt}",
+        response = llm_backend.complete(
+            f"Task description:\n{prompt}",
+            provider=provider,
+            system=_CLASSIFICATION_SYSTEM_PROMPT,
         )
-        raw = response.output_text.strip()
+        raw = response.text.strip()
 
         # Accept fenced JSON if the model returns it despite the prompt.
         if raw.startswith("```"):
@@ -205,7 +203,7 @@ class DomainClassifier:
 
     Classification strategy (in priority order):
 
-    1. LLM path (requires OPENAI_API_KEY): the task prompt is sent to the LLM,
+    1. LLM path (requires a configured LLM provider): the task prompt is sent to the LLM,
        which reasons about domain, subdomain, and intent from scratch. This is
        genuinely emergent: the model reads the prompt semantically rather than
        matching against a fixed keyword list.

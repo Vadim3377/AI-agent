@@ -393,13 +393,12 @@ Code to document:
 """
 
 
-def _call_llm_for_code(client, model: str, code: str) -> str:
+def _call_llm_for_code(provider: str, model: str, code: str) -> str:
     """Direct LLM call that asks for Python code back, not JSON."""
-    response = client.responses.create(
-        model=model,
-        input=_BASE_DOC_PROMPT.format(code=code),
-    )
-    return response.output_text
+    import llm_backend
+    return llm_backend.complete(
+        _BASE_DOC_PROMPT.format(code=code), model=model, provider=provider
+    ).text
 
 
 # Code extraction from LLM response
@@ -553,20 +552,16 @@ def _measure_quality_coverage(code: str) -> Dict[str, Any]:
 # Benchmark runner
 
 def run_doc_benchmark() -> List[Dict[str, Any]]:
-    import os
-    from openai import OpenAI
     from architecture_generator import ArchitectureGenerator
     from blueprint_mutator import BlueprintMutator
     from domain_profiler import DomainProfiler
     from llm_agent_runner import LLMAgentRunner
 
-    model = "gpt-4.1-mini"
-    client = OpenAI()
-
     profiler = DomainProfiler()
     generator = ArchitectureGenerator()
     mutator = BlueprintMutator()
-    llm_runner = LLMAgentRunner(model=model)
+    llm_runner = LLMAgentRunner()
+    provider, model = llm_runner.provider, llm_runner.model
 
     doc_prompt = "Add useful comments and docstrings to explain the code."
     profile = profiler.profile(doc_prompt)
@@ -590,7 +585,7 @@ def run_doc_benchmark() -> List[Dict[str, Any]]:
         # The base blueprint's single-shot path returns JSON because the
         # documentation schema asks for structured fields. To measure base
         # quality fairly we use a direct prompt that returns Python code.
-        base_raw = _call_llm_for_code(client, model, code)
+        base_raw = _call_llm_for_code(provider, model, code)
         base_code = _extract_python_code(base_raw)
         base_stats = _measure_quality_coverage(base_code) if base_code else {
             "coverage": 0.0, "total": 0, "complete": 0,
@@ -706,12 +701,23 @@ def save_markdown(results: List[Dict[str, Any]], path: str) -> None:
 
 
 def main() -> None:
-    if not os.getenv("OPENAI_API_KEY"):
-        print("ERROR: OPENAI_API_KEY is not set.")
+    import argparse
+    import llm_backend
+
+    parser = argparse.ArgumentParser(description="Documentation feedback loop benchmark")
+    llm_backend.add_cli_args(parser)
+    args = parser.parse_args()
+    llm_backend.apply_cli_args(args)
+
+    if not llm_backend.is_configured(args.provider):
+        print(f"ERROR: provider {args.provider!r} is not configured "
+              "(set OPENAI_API_KEY, or GOOGLE_CLOUD_PROJECT for gemini).")
         return
 
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
+    json_path = llm_backend.results_path(os.path.join(results_dir, "doc_benchmark.json"), args.provider)
+    md_path = llm_backend.results_path(os.path.join(results_dir, "doc_benchmark.md"), args.provider)
 
     print("Running documentation feedback loop benchmark (quality-aware)...")
     print(f"Tasks: {len(DOC_TASKS)}")
@@ -722,8 +728,8 @@ def main() -> None:
 
     results = run_doc_benchmark()
 
-    save_json(results, os.path.join(results_dir, "doc_benchmark.json"))
-    save_markdown(results, os.path.join(results_dir, "doc_benchmark.md"))
+    save_json(results, json_path)
+    save_markdown(results, md_path)
 
     avg_base = _avg(results, "base_coverage")
     avg_mutated = _avg(results, "mutated_coverage")
@@ -734,8 +740,8 @@ def main() -> None:
     print(f"Base blueprint avg quality coverage   : {avg_base:.0%}")
     print(f"Mutated blueprint avg quality coverage: {avg_mutated:.0%}")
     print(f"Improved in                           : {n_improved}/{len(results)} tasks")
-    print("Saved -> results/doc_benchmark.json")
-    print("Saved -> results/doc_benchmark.md")
+    print(f"Saved -> {json_path}")
+    print(f"Saved -> {md_path}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """
-Execute selected blueprints with an OpenAI-backed runner.
+Execute selected blueprints with an LLM-backed runner (OpenAI or Gemini).
 
 The runner supports single-shot execution and two active feedback loops:
 debugging, where generated fixes are checked with pytest and revised on
@@ -16,11 +16,11 @@ import json
 import os
 import re
 import textwrap
+import time
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
-
+import llm_backend
 from models import AgentBlueprint
 from tools import pytest_runner, extract_fix_from_code
 
@@ -198,17 +198,39 @@ def _extract_python_code(raw: str) -> str:
 # Main runner
 class LLMAgentRunner:
     """
-    Executes a selected AgentBlueprint using an OpenAI model with
+    Executes a selected AgentBlueprint using an OpenAI or Gemini model with
     tool feedback loops for debugging and documentation domains.
+
+    Each run() appends a usage record (calls, tokens, latency) to run_log,
+    which benchmarks summarise with llm_backend.summarise_runs().
     """
 
-    def __init__(self, model: str = "gpt-4.1-mini") -> None:
-        if not os.getenv("OPENAI_API_KEY"):
+    def __init__(self, model: Optional[str] = None, provider: Optional[str] = None) -> None:
+        self.provider = (provider or llm_backend.default_provider()).lower()
+        if self.provider == "openai" and not os.getenv("OPENAI_API_KEY"):
             raise ValueError("OPENAI_API_KEY is missing. Set it in .env or environment.")
-        self.client = OpenAI()
-        self.model = model
+        if self.provider == "gemini" and not os.getenv("GOOGLE_CLOUD_PROJECT"):
+            raise ValueError("GOOGLE_CLOUD_PROJECT is missing. Set it in .env or environment.")
+        self.model = model or llm_backend.default_model(self.provider)
+        self.run_log: List[Dict[str, Any]] = []
+        self._usage: Dict[str, Any] = {}
 
     def run(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
+        self._usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "llm_latency_s": 0.0}
+        start = time.perf_counter()
+        result = self._dispatch(blueprint, task_input)
+        usage = {
+            "provider": self.provider,
+            "model": self.model,
+            **self._usage,
+            "latency_s": round(time.perf_counter() - start, 3),
+        }
+        usage["llm_latency_s"] = round(usage["llm_latency_s"], 3)
+        self.run_log.append(usage)
+        result["usage"] = usage
+        return result
+
+    def _dispatch(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
         subdomain = blueprint.domain_profile.subdomain.lower()
 
         if "debug" in subdomain and _blueprint_expects_verification(blueprint):
@@ -225,6 +247,7 @@ class LLMAgentRunner:
         parsed = self._try_parse_json(raw_text)
         return {
             "runner": "llm",
+            "provider": self.provider,
             "model": self.model,
             "blueprint_name": blueprint.name,
             "domain": blueprint.domain_profile.domain,
@@ -297,6 +320,7 @@ class LLMAgentRunner:
 
         return {
             "runner": "llm_with_feedback",
+            "provider": self.provider,
             "model": self.model,
             "blueprint_name": blueprint.name,
             "domain": blueprint.domain_profile.domain,
@@ -378,6 +402,7 @@ class LLMAgentRunner:
 
         return {
             "runner": "llm_with_doc_feedback",
+            "provider": self.provider,
             "model": self.model,
             "blueprint_name": blueprint.name,
             "domain": blueprint.domain_profile.domain,
@@ -493,12 +518,19 @@ class LLMAgentRunner:
         return "\n".join(useful[:20]) if useful else raw_pytest_output[:400]
     # LLM helpers
     def _call_llm(self, prompt: str) -> str:
-        response = self.client.responses.create(model=self.model, input=prompt)
-        return response.output_text
+        return self._complete(prompt)
 
     def _call_llm_with_history(self, history: List[Dict[str, str]]) -> str:
-        response = self.client.responses.create(model=self.model, input=history)
-        return response.output_text
+        return self._complete(history)
+
+    def _complete(self, messages: llm_backend.Messages) -> str:
+        response = llm_backend.complete(messages, model=self.model, provider=self.provider)
+        if self._usage:
+            self._usage["calls"] += 1
+            self._usage["input_tokens"] += response.input_tokens
+            self._usage["output_tokens"] += response.output_tokens
+            self._usage["llm_latency_s"] += response.latency_s
+        return response.text
     # Fix extraction (debugging)
     def _extract_fix(self, parsed: Optional[Dict], raw_text: str) -> Optional[str]:
         if parsed and isinstance(parsed, dict):
