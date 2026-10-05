@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 import llm_backend
 from models import AgentBlueprint
-from tools import pytest_runner, extract_fix_from_code
+from tools import pytest_runner, run_tests, extract_fix_from_code
 
 load_dotenv()
 
@@ -214,9 +214,23 @@ class LLMAgentRunner:
         self.model = model or llm_backend.default_model(self.provider)
         self.run_log: List[Dict[str, Any]] = []
         self._usage: Dict[str, Any] = {}
+        self._tests: Optional[str] = None
 
-    def run(self, blueprint: AgentBlueprint, task_input: str) -> Dict[str, Any]:
+    def run(
+        self, blueprint: AgentBlueprint, task_input: str, tests: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute the blueprint on task_input. If tests (pytest source) are given,
+        they are shown to the model in every mode, and the debugging loop runs
+        them to verify fixes instead of the generated smoke tests.
+        """
         self._usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "llm_latency_s": 0.0}
+        self._tests = tests
+        if tests:
+            task_input = (
+                f"{task_input}\n\nFailing tests from the bug report "
+                f"(the fixed function must pass them):\n```python\n{tests}\n```"
+            )
         start = time.perf_counter()
         result = self._dispatch(blueprint, task_input)
         usage = {
@@ -296,7 +310,7 @@ class LLMAgentRunner:
                 rounds_taken = round_no
                 continue
 
-            pytest_result = pytest_runner(fix)
+            pytest_result = run_tests(fix, self._tests) if self._tests else pytest_runner(fix)
             final_pytest_passed = pytest_result.success
 
             if round_no == 0:
@@ -513,9 +527,10 @@ class LLMAgentRunner:
         lines = raw_pytest_output.splitlines()
         useful = [
             line.strip() for line in lines
-            if any(kw in line for kw in ["FAILED", "AssertionError", "assert", "Error", "def test_"])
+            if line.startswith("E ")
+            or any(kw in line for kw in ["FAILED", "AssertionError", "assert", "Error", "def test_", "timed out"])
         ]
-        return "\n".join(useful[:20]) if useful else raw_pytest_output[:400]
+        return "\n".join(useful[:30]) if useful else raw_pytest_output[:400]
     # LLM helpers
     def _call_llm(self, prompt: str) -> str:
         return self._complete(prompt)

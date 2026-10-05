@@ -208,6 +208,41 @@ def pytest_runner(task_input: str) -> ToolResult:
             output={"passed": False, "tests_run": 0},
             raw_text="Pytest timed out.", error="Timeout",
         )
+# Tool: run_tests
+def run_tests(code: str, tests: str, timeout: int = 15) -> ToolResult:
+    """
+    Run the given pytest tests against code in a subprocess. Unlike
+    pytest_runner, which generates generic smoke tests, this checks behaviour
+    the tests actually specify (e.g. failing tests from a bug report).
+    """
+    import os as _os
+    fd, tmp = tempfile.mkstemp(suffix=".py", prefix="stemtests_")
+    with _os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(code + "\n\n\n" + tests + "\n")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", tmp, "-q", "--tb=short", "--no-header",
+             "-p", "no:cacheprovider", "--import-mode=importlib"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        raw = proc.stdout + proc.stderr
+        return ToolResult(
+            tool_name="run_tests",
+            success=proc.returncode == 0,
+            output={"passed": proc.returncode == 0, "returncode": proc.returncode},
+            raw_text=raw[:3000],
+        )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            tool_name="run_tests", success=False, output={"passed": False},
+            raw_text=f"Tests timed out after {timeout}s (possible infinite loop).",
+            error="Timeout",
+        )
+    finally:
+        try:
+            _os.remove(tmp)
+        except OSError:
+            pass
 # Tool: static_checker
 def static_checker(task_input: str) -> ToolResult:
     """

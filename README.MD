@@ -394,6 +394,28 @@ results/quixbugs_benchmark.json
 results/quixbugs_benchmark.md
 ```
 
+### Visible-test debugging benchmark (requires API key)
+
+```bash
+python hard_benchmark.py [--provider gemini] [--validate-only]
+```
+
+Gives the feedback loop a real test signal. Each of 12 functions has several interacting
+bugs and comes with a bug report: failing tests that pin down the intended behaviour. Both
+blueprints see the same tests; only the mutated blueprint can run them (`tools.run_tests`)
+and revise. Fixes are graded on hidden held-out checks with different inputs.
+
+Results (Gemini 3.5 Flash):
+```
+                    Base (single-shot)   Mutated (test loop)
+Held-out pass rate  12/12                12/12
+p50 latency/task    13.3 s               18.5 s
+Cost per task       $0.037               $0.049
+```
+
+With the failing tests in the prompt, the model fixes every task single-shot; the loop
+revised once (`roman_to_int`) and adds cost without adding correctness at this difficulty.
+
 ### Documentation feedback loop benchmark (requires API key)
 
 ```bash
@@ -595,6 +617,7 @@ Deterministic vs LLM runner              0.60     0.95
 30-task held-out pass rate (OpenAI)      93%      97%
 30-task held-out pass rate (Gemini)      93%     100%
 QuixBugs held-out pass rate (Gemini)     80%      80%
+Visible-test benchmark (Gemini)         100%     100%
 Doc quality coverage (mutated)           --       100%
 ```
 
@@ -624,6 +647,7 @@ Doc quality coverage (mutated)           --       100%
 |-- llm_agent_runner.py        LLM-backed runner with feedback loops (debugging + documentation)
 |-- llm_backend.py             Provider-agnostic LLM calls (OpenAI, Gemini on Vertex AI), usage tracking
 |-- held_out.py                Sandboxed held-out grading for debugging benchmarks
+|-- hard_benchmark.py          Multi-bug tasks with visible failing tests (loop runs real tests)
 |-- Dockerfile                 Container for Cloud Run
 |-- stem_shell.py              Coordinator: grow_initial_blueprint, grow_and_evaluate
 |-- requirements.txt
